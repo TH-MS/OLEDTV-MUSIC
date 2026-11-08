@@ -4,6 +4,8 @@ package com.oledtv.music.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -153,22 +155,25 @@ fun AlbumTracklistScreen(
     }
 
     Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
-        Column(Modifier.width(300.dp).fillMaxHeight()) {
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopStart) {
+        BoxWithConstraints(Modifier.width(340.dp).fillMaxHeight()) {
+            // Uniform cover: depends only on the screen, never on how many lines the title needs
+            // (room for a two-line title is always reserved below it).
+            val cover = minOf(maxWidth, maxHeight - 130.dp)
+            Column(Modifier.fillMaxSize()) {
                 CoverImage(
                     url = repo.coverArtUrl(album.coverArt, 640),
                     cacheKey = "al-${album.id}",
                     sizePx = 640,
                     fallbackLetter = album.name,
-                    modifier = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true),
+                    modifier = Modifier.size(cover),
                 )
+                Spacer(Modifier.height(12.dp))
+                Text(album.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(album.artist.orEmpty(), fontSize = 18.sp, color = Color(0xFFBBBBBB), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(album.year?.toString().orEmpty(), fontSize = 16.sp, color = Color(0xFF888888))
             }
-            Spacer(Modifier.padding(6.dp))
-            Text(album.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(album.artist.orEmpty(), fontSize = 18.sp, color = Color(0xFFBBBBBB), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(album.year?.toString().orEmpty(), fontSize = 16.sp, color = Color(0xFF888888))
         }
-        Spacer(Modifier.width(40.dp))
+        Spacer(Modifier.width(36.dp))
         Column(Modifier.weight(1f).fillMaxHeight()) {
             when (val s = state) {
                 is Load.Loading -> StatusPane("Loading tracks…")
@@ -192,7 +197,8 @@ private fun TrackList(
 
     LazyColumn(
         state = listState,
-        contentPadding = PaddingValues(vertical = 8.dp, horizontal = 8.dp),
+        // 28 dp side padding: a focused row scales up ~4% and must stay clear of the cover.
+        contentPadding = PaddingValues(vertical = 12.dp, horizontal = 28.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxSize(),
     ) {

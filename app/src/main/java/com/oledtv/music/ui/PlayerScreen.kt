@@ -11,7 +11,14 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -60,6 +67,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.AudioAttributes
@@ -151,8 +160,6 @@ class PlaybackManager private constructor(context: Context) {
             .build()
 
         player.addListener(object : Player.Listener {
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = maybeAppendNextAlbum()
-
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) retryCount = 0
             }
@@ -173,6 +180,9 @@ class PlaybackManager private constructor(context: Context) {
 
     val hasQueue: Boolean get() = player.mediaItemCount > 0
 
+    /** True while the remaining tracks of the current album are shuffled (UI highlights the button). */
+    var shuffled by mutableStateOf(false)
+
     /** Album Artist whose albums are queued (used to rebuild navigation for "Now Playing"). */
     var artist: ArtistDto? = null
     val queueAlbums: List<AlbumDto> get() = albums
@@ -188,7 +198,7 @@ class PlaybackManager private constructor(context: Context) {
         player.setMediaItems(toItems(repo, albums[albumIndex], songs, albumIndex), startIndex, 0L)
         player.prepare()
         player.play()
-        maybeAppendNextAlbum()
+        shuffled = false
     }
 
     private fun toItems(repo: NavidromeRepository, album: AlbumDto, songs: List<SongDto>, albumIdx: Int): List<MediaItem> =
@@ -212,35 +222,22 @@ class PlaybackManager private constructor(context: Context) {
                 .build()
         }
 
-    private fun maybeAppendNextAlbum() {
-        val r = repo ?: return
-        if (appending || player.mediaItemCount == 0) return
-        if (player.currentMediaItemIndex != player.mediaItemCount - 1) return
-        appending = true
-        scope.launch {
-            try {
-                var next = loadedAlbumIndex + 1
-                while (next < albums.size) {
-                    val songs = r.songsOf(albums[next].id)
-                    if (songs.isNotEmpty()) {
-                        val firstNewIndex = player.mediaItemCount
-                        player.addMediaItems(toItems(r, albums[next], songs, next))
-                        loadedAlbumIndex = next
-                        if (player.playbackState == Player.STATE_ENDED) { // queue ran dry while we were fetching
-                            player.seekTo(firstNewIndex, 0L); player.play()
-                        }
-                        break
-                    }
-                    next++
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Network hiccup: allow another attempt on the next transition.
-            } finally {
-                appending = false
-            }
-        }
+    /**
+     * Shuffles ONLY the remaining tracks of the album that is playing (the current track keeps playing).
+     * Press again to restore album order. Nothing else is queued, so the next album chosen plays in normal order.
+     */
+    fun toggleShuffleCurrentAlbum() {
+        val cur = player.currentMediaItemIndex
+        val albumIdx = currentAlbumIndex()
+        if (cur < 0 || albumIdx < 0) return
+        fun albumOf(i: Int) = player.getMediaItemAt(i).mediaMetadata.extras?.getInt(KEY_ALBUM_INDEX, -1) ?: -1
+        var end = cur
+        while (end + 1 < player.mediaItemCount && albumOf(end + 1) == albumIdx) end++
+        if (end <= cur) return
+        val rest = (cur + 1..end).map { player.getMediaItemAt(it) }
+        val reordered = if (shuffled) rest.sortedBy { it.mediaMetadata.extras?.getInt(KEY_TRACK_NO, 0) ?: 0 } else rest.shuffled()
+        player.replaceMediaItems(cur + 1, end + 1, reordered)
+        shuffled = !shuffled
     }
 }
 
@@ -335,10 +332,10 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
             Column(Modifier.weight(0.45f).fillMaxHeight()) {
                 // Text, progress bar and buttons are measured first; the cover takes whatever height is left,
                 // so long titles shrink the cover instead of pushing the controls off-screen (any 16:9 size).
-                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                DriftingCover(Modifier.weight(1f).fillMaxWidth()) { coverSize ->
                     FocusSurface(
                         onClick = { uiVisible = !uiVisible },
-                        modifier = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true),
+                        modifier = Modifier.size(coverSize),
                         shape = RoundedCornerShape(8.dp),
                         containerColor = Color.Transparent,
                         focusedContainerColor = Color.Transparent,
@@ -373,6 +370,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                         }
                         ControlButton(if (playWhenReady) Glyph.Pause else Glyph.Play, Modifier.focusRequester(playFocus), onClick = togglePlay)
                         ControlButton(Glyph.Next) { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
+                        ControlButton(Glyph.Shuffle, active = manager.shuffled) { manager.toggleShuffleCurrentAlbum() }
                     }
                 }
             }
@@ -391,14 +389,14 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
 }
 
 // Icons are drawn directly (explicit colours) so they can never end up invisible against the button background.
-private enum class Glyph { Prev, Play, Pause, Next }
+private enum class Glyph { Prev, Play, Pause, Next, Shuffle }
 
 @Composable
-private fun GlyphIcon(glyph: Glyph, modifier: Modifier = Modifier.size(30.dp)) {
+private fun GlyphIcon(glyph: Glyph, modifier: Modifier = Modifier.size(30.dp), tint: Color = OffWhite) {
     Canvas(modifier) {
         val w = size.width
         val h = size.height
-        val c = OffWhite
+        val c = tint
         fun tri(x0: Float, x1: Float) = Path().apply {
             if (x1 >= x0) { moveTo(x0, 0f); lineTo(x1, h / 2f); lineTo(x0, h) }
             else { moveTo(x0, 0f); lineTo(x1, h / 2f); lineTo(x0, h) }
@@ -414,6 +412,16 @@ private fun GlyphIcon(glyph: Glyph, modifier: Modifier = Modifier.size(30.dp)) {
                 drawPath(tri(w * 0.05f, w * 0.72f), c)
                 drawRect(c, Offset(w * 0.78f, 0f), Size(w * 0.17f, h))
             }
+            Glyph.Shuffle -> {
+                val sw = h * 0.13f
+                fun arrow(yc: Float) = Path().apply {
+                    moveTo(w * 0.70f, yc - h * 0.22f); lineTo(w, yc); lineTo(w * 0.70f, yc + h * 0.22f); close()
+                }
+                drawLine(c, Offset(0f, h * 0.22f), Offset(w * 0.74f, h * 0.78f), sw)
+                drawLine(c, Offset(0f, h * 0.78f), Offset(w * 0.74f, h * 0.22f), sw)
+                drawPath(arrow(h * 0.22f), c)
+                drawPath(arrow(h * 0.78f), c)
+            }
             Glyph.Prev -> {
                 drawPath(tri(w * 0.95f, w * 0.28f), c)
                 drawRect(c, Offset(w * 0.05f, 0f), Size(w * 0.17f, h))
@@ -423,9 +431,47 @@ private fun GlyphIcon(glyph: Glyph, modifier: Modifier = Modifier.size(30.dp)) {
 }
 
 @Composable
-private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    FocusSurface(onClick, modifier) {
-        Box(Modifier.padding(horizontal = 32.dp, vertical = 12.dp)) { GlyphIcon(glyph, Modifier.size(26.dp)) }
+private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, active: Boolean = true, onClick: () -> Unit) {
+    // Pure black background (OLED); focus is shown by the white border + slight scale. ~40% shorter than before.
+    FocusSurface(
+        onClick, modifier,
+        containerColor = Color.Black,
+        focusedContainerColor = Color(0xFF161616),
+    ) {
+        Box(Modifier.padding(horizontal = 30.dp, vertical = 6.dp)) {
+            GlyphIcon(glyph, Modifier.size(18.dp), tint = if (active) OffWhite else Color(0xFF7A7A7A))
+        }
+    }
+}
+
+/**
+ * OLED burn-in protection for the cover: it drifts very slowly and continuously inside its window,
+ * bouncing off the edges like a DVD logo (different periods on X and Y give a non-repeating path).
+ * Only the draw layer is updated, so there is no recomposition per frame.
+ */
+@Composable
+private fun DriftingCover(modifier: Modifier, content: @Composable (Dp) -> Unit) {
+    BoxWithConstraints(modifier) {
+        val cover = minOf(maxWidth, maxHeight) * 0.9f
+        val slackX = (maxWidth - cover).value.coerceAtLeast(0f)
+        val slackY = (maxHeight - cover).value.coerceAtLeast(0f)
+        val density = LocalDensity.current.density
+        val transition = rememberInfiniteTransition(label = "drift")
+        val fx = transition.animateFloat(
+            0f, 1f,
+            infiniteRepeatable(tween((slackX / 4f * 1000).toInt().coerceAtLeast(1500), easing = LinearEasing), RepeatMode.Reverse),
+            label = "x",
+        )
+        val fy = transition.animateFloat(
+            0f, 1f,
+            infiniteRepeatable(tween((slackY / 3f * 1000).toInt().coerceAtLeast(1500), easing = LinearEasing), RepeatMode.Reverse),
+            label = "y",
+        )
+        Box(
+            Modifier
+                .size(cover)
+                .graphicsLayer { translationX = fx.value * slackX * density; translationY = fy.value * slackY * density },
+        ) { content(cover) }
     }
 }
 

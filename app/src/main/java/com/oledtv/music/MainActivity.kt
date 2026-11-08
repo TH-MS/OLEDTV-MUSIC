@@ -2,7 +2,9 @@
 
 package com.oledtv.music
 
+import android.app.Activity
 import android.content.Context
+import android.view.WindowManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -140,6 +142,21 @@ fun OledApp(prefs: Prefs) {
 
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
 
+    // Keep the screen on (no screensaver) while music plays, and for 30 s after it stops/pauses.
+    val activity = context as? Activity
+    androidx.compose.runtime.LaunchedEffect(manager) {
+        var lastPlaying = System.currentTimeMillis()
+        while (true) {
+            if (manager.player.isPlaying) lastPlaying = System.currentTimeMillis()
+            val keepOn = System.currentTimeMillis() - lastPlaying < 30_000
+            activity?.window?.let { w ->
+                if (keepOn) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+            delay(1_000)
+        }
+    }
+
     // Rebuild the back stack so Back from Now Playing lands on the tracklist of the album that is playing.
     fun nowPlayingStack(includePlayer: Boolean) {
         val artist = manager.artist
@@ -236,12 +253,12 @@ fun ConfigScreen(
             Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(48.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvTextField("Server URL", url, { url = it }, KeyboardType.Uri, modifier = Modifier.focusRequester(first))
+                    TvTextField("Server URL", url, { url = it }, KeyboardType.Uri)
                     TvTextField("Username", user, { user = it }, KeyboardType.Text)
                     TvTextField("Password", pass, { pass = it }, KeyboardType.Password, password = true)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    ChoiceRow("Artists per row", listOf(0 to "Auto", 4 to "4", 5 to "5", 6 to "6", 7 to "7", 8 to "8"), artistColumns, onArtistColumns)
+                    ChoiceRow("Artists per row", listOf(0 to "Auto", 4 to "4", 5 to "5", 6 to "6", 7 to "7", 8 to "8"), artistColumns, onArtistColumns, first)
                     ChoiceRow("Albums per row", listOf(0 to "Auto", 3 to "3", 4 to "4", 5 to "5", 6 to "6"), albumColumns, onAlbumColumns)
                     error?.let { Text(it, color = Color(0xFFFF6B6B), fontSize = 15.sp) }
                     FocusSurface(onClick = {
@@ -266,13 +283,17 @@ fun ConfigScreen(
 }
 
 @Composable
-private fun ChoiceRow(label: String, options: List<Pair<Int, String>>, selected: Int, onSelect: (Int) -> Unit) {
+private fun ChoiceRow(
+    label: String, options: List<Pair<Int, String>>, selected: Int, onSelect: (Int) -> Unit,
+    startFocus: FocusRequester? = null,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(label, fontSize = 14.sp, color = Color(0xFFAAAAAA))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             options.forEach { (n, text) ->
                 FocusSurface(
                     onClick = { onSelect(n) },
+                    modifier = if (startFocus != null && selected == n) Modifier.focusRequester(startFocus) else Modifier,
                     containerColor = if (selected == n) Color(0xFF505050) else Color(0xFF121212),
                 ) {
                     Text(

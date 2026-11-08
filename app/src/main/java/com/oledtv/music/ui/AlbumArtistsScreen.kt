@@ -172,7 +172,7 @@ fun AlbumArtistsScreen(
 
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Album Artists", Modifier.weight(1f), fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            Text("OLED MUSIC PLAYER", Modifier.weight(1f), fontSize = 32.sp, fontWeight = FontWeight.Bold)
             if (onNowPlaying != null) {
                 FocusSurface(onNowPlaying) { Text("Now Playing", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
                 Spacer(Modifier.width(16.dp))
