@@ -212,8 +212,12 @@ fun OledApp(prefs: Prefs) {
                     repo = repo, albums = screen.albums, albumIndex = screen.index,
                     listState = screen.list, lastIndex = screen.last, playingSongId = manager.nowSongId,
                     onPlay = { songs, start ->
-                        manager.artist = stack.filterIsInstance<Screen.Artist>().lastOrNull()?.artist
-                        manager.play(repo, screen.albums, screen.index, songs, start)
+                        // Selecting the song that is already playing just opens Now Playing: no restart.
+                        val alreadyPlaying = manager.nowSongId != null && manager.nowSongId == songs.getOrNull(start)?.id
+                        if (!alreadyPlaying) {
+                            manager.artist = stack.filterIsInstance<Screen.Artist>().lastOrNull()?.artist
+                            manager.play(repo, screen.albums, screen.index, songs, start)
+                        }
                         stack.add(Screen.Player)
                     },
                 )

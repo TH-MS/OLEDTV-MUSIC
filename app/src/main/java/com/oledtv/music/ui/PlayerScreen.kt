@@ -372,7 +372,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
         }
     }
 
-    // Holding SELECT on any element for 5 s hides the whole UI (hold again, press a direction or Back to restore).
+    // Holding SELECT on any element for 2.5 s hides the whole UI (hold again, press a direction or Back to restore).
     val scope = rememberCoroutineScope()
     val hold = remember { object { var job: Job? = null; var fired = false } }
     val onRootKey: (KeyEvent) -> Boolean = { ev ->
@@ -385,7 +385,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                 if (ev.nativeKeyEvent.repeatCount == 0 && hold.job == null) {
                     hold.fired = false
                     hold.job = scope.launch {
-                        delay(5_000)
+                        delay(2_500)
                         hold.fired = true
                         uiVisible = !uiVisible
                     }
@@ -569,16 +569,16 @@ private fun DriftingCover(modifier: Modifier, speedFactor: Float, label: String?
             }
         }
 
-        Column(
-            Modifier
-                .width(cover)
-                .graphicsLayer { translationX = px.floatValue; translationY = py.floatValue },
-        ) {
-            Box(Modifier.height(labelH).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                if (label != null) Text(label, fontSize = 16.sp, color = OffWhite)
-            }
-            content(cover)
+        // Speed label: fixed, horizontally centred, above the highest point the cover ever reaches.
+        Box(Modifier.align(Alignment.TopCenter).height(labelH).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            if (label != null) Text(label, fontSize = 16.sp, color = OffWhite)
         }
+        Box(
+            Modifier
+                .padding(top = labelH)
+                .graphicsLayer { translationX = px.floatValue; translationY = py.floatValue }
+                .size(cover),
+        ) { content(cover) }
     }
 }
 
