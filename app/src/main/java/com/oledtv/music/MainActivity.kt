@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,7 +21,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
@@ -83,6 +86,10 @@ class Prefs(context: Context) {
         val url = sp.getString("url", null)?.takeIf { it.isNotBlank() } ?: return null
         return ServerConfig(url, sp.getString("user", "").orEmpty(), sp.getString("pass", "").orEmpty())
     }
+    var gridColumns: Int
+        get() = sp.getInt("grid_columns", 0) // 0 = automatic
+        set(v) { sp.edit().putInt("grid_columns", v).apply() }
+
     fun save(c: ServerConfig) { sp.edit().putString("url", c.url).putString("user", c.username).putString("pass", c.password).apply() }
 }
 
@@ -120,29 +127,34 @@ fun OledApp(prefs: Prefs) {
     val context = LocalContext.current
     val manager = remember { PlaybackManager.get(context) }
     var config by remember { mutableStateOf(prefs.load()) }
+    var gridColumns by remember { mutableIntStateOf(prefs.gridColumns) }
     val repo = remember(config) { config?.let { NavidromeRepository(it) } }
     val stack = remember { mutableStateListOf<Screen>(if (prefs.load() == null) Screen.Config else Screen.Artists()) }
 
     BackHandler(enabled = stack.size > 1) { stack.removeAt(stack.lastIndex) }
 
-    CompositionLocalProvider(LocalContentColor provides Color.White) {
+    CompositionLocalProvider(LocalContentColor provides Color(0xFFE6E6E6)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) { // true OLED black
             val screen = stack.last()
             if (screen is Screen.Config || repo == null) {
-                ConfigScreen(initial = config) { saved ->
+                ConfigScreen(
+                    initial = config,
+                    columns = gridColumns,
+                    onColumnsChange = { gridColumns = it; prefs.gridColumns = it },
+                ) { saved ->
                     prefs.save(saved)
                     config = saved
                     stack.clear(); stack.add(Screen.Artists())
                 }
             } else when (screen) {
                 is Screen.Artists -> AlbumArtistsScreen(
-                    repo = repo, gridState = screen.grid, lastIndex = screen.last,
+                    repo = repo, gridState = screen.grid, lastIndex = screen.last, columns = gridColumns,
                     onArtistClick = { stack.add(Screen.Artist(it)) },
                     onSettings = { stack.add(Screen.Config) },
                     onNowPlaying = if (manager.hasQueue) ({ stack.add(Screen.Player) }) else null,
                 )
                 is Screen.Artist -> ArtistDetailScreen(
-                    repo = repo, artist = screen.artist, gridState = screen.grid, lastIndex = screen.last,
+                    repo = repo, artist = screen.artist, gridState = screen.grid, lastIndex = screen.last, columns = gridColumns,
                     onAlbumClick = { albums, i -> stack.add(Screen.Tracks(albums, i)) },
                 )
                 is Screen.Tracks -> AlbumTracklistScreen(
@@ -163,7 +175,7 @@ fun OledApp(prefs: Prefs) {
 // ───────────────────────── Config screen ─────────────────────────
 
 @Composable
-fun ConfigScreen(initial: ServerConfig?, onSaved: (ServerConfig) -> Unit) {
+fun ConfigScreen(initial: ServerConfig?, columns: Int, onColumnsChange: (Int) -> Unit, onSaved: (ServerConfig) -> Unit) {
     var url by remember { mutableStateOf(initial?.url ?: "http://") }
     var user by remember { mutableStateOf(initial?.username.orEmpty()) }
     var pass by remember { mutableStateOf(initial?.password.orEmpty()) }
@@ -174,11 +186,27 @@ fun ConfigScreen(initial: ServerConfig?, onSaved: (ServerConfig) -> Unit) {
     androidx.compose.runtime.LaunchedEffect(Unit) { delay(50); first.requestSafely() }
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(Modifier.width(560.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(Modifier.width(560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("Connect to Navidrome", fontSize = 30.sp, fontWeight = FontWeight.Bold)
             TvTextField("Server URL", url, { url = it }, KeyboardType.Uri, modifier = Modifier.focusRequester(first))
             TvTextField("Username", user, { user = it }, KeyboardType.Text)
             TvTextField("Password", pass, { pass = it }, KeyboardType.Password, password = true)
+            Text("Albums per row", fontSize = 14.sp, color = Color(0xFFAAAAAA))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                listOf(0 to "Auto", 3 to "3", 4 to "4", 5 to "5", 6 to "6").forEach { (n, label) ->
+                    FocusSurface(
+                        onClick = { onColumnsChange(n) },
+                        containerColor = if (columns == n) Color(0xFF505050) else Color(0xFF121212),
+                    ) {
+                        Text(
+                            label,
+                            Modifier.padding(horizontal = 22.dp, vertical = 10.dp),
+                            fontSize = 18.sp,
+                            fontWeight = if (columns == n) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                }
+            }
             error?.let { Text(it, color = Color(0xFFFF6B6B), fontSize = 16.sp) }
             FocusSurface(onClick = {
                 if (busy || url.isBlank() || user.isBlank()) return@FocusSurface

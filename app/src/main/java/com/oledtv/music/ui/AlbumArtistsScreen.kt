@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.getValue
@@ -46,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
+import androidx.tv.material3.LocalContentColor
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
@@ -70,6 +72,9 @@ fun FocusSurface(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(12.dp),
+    containerColor: Color = Color(0xFF121212),
+    focusedContainerColor: Color = Color(0xFF2A2A2A),
+    showFocus: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Surface(
@@ -77,19 +82,21 @@ fun FocusSurface(
         modifier = modifier,
         shape = ClickableSurfaceDefaults.shape(shape = shape, focusedShape = shape),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = Color(0xFF121212),
-            contentColor = Color.White,
-            focusedContainerColor = Color(0xFF2A2A2A),
-            focusedContentColor = Color.White,
-            pressedContainerColor = Color(0xFF3A3A3A),
-            pressedContentColor = Color.White,
+            containerColor = containerColor,
+            contentColor = Color(0xFFE6E6E6),
+            focusedContainerColor = focusedContainerColor,
+            focusedContentColor = Color(0xFFE6E6E6),
+            pressedContainerColor = focusedContainerColor,
+            pressedContentColor = Color(0xFFE6E6E6),
         ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.08f),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = if (showFocus) 1.08f else 1f),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(BorderStroke(3.dp, Color.White), shape = shape),
+            focusedBorder = if (showFocus) Border(BorderStroke(3.dp, Color(0xFFE6E6E6)), shape = shape) else Border.None,
         ),
-        content = content,
-    )
+    ) {
+        // Explicit content colour so text never inherits an unexpected (invisible) colour.
+        CompositionLocalProvider(LocalContentColor provides Color(0xFFE6E6E6)) { content() }
+    }
 }
 
 /** Downscaled, cache-keyed cover image. [sizePx] keeps bitmaps small for 1.5 GB devices. */
@@ -150,6 +157,7 @@ fun AlbumArtistsScreen(
     repo: NavidromeRepository,
     gridState: LazyGridState,
     lastIndex: MutableIntState,
+    columns: Int,
     onArtistClick: (ArtistDto) -> Unit,
     onSettings: () -> Unit,
     onNowPlaying: (() -> Unit)?,
@@ -176,7 +184,7 @@ fun AlbumArtistsScreen(
         when (val s = state) {
             is Load.Loading -> StatusPane("Loading artists…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick)
+            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns)
         }
     }
 }
@@ -188,13 +196,14 @@ private fun ArtistGrid(
     gridState: LazyGridState,
     lastIndex: MutableIntState,
     onClick: (ArtistDto) -> Unit,
+    columns: Int,
 ) {
     if (artists.isEmpty()) { StatusPane("No album artists found on this server."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, artists.lastIndex) }
     val startFocus = remember { FocusRequester() }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(170.dp),
+        columns = if (columns > 0) GridCells.Fixed(columns) else GridCells.Adaptive(170.dp),
         state = gridState,
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
@@ -210,9 +219,9 @@ private fun ArtistGrid(
             ) {
                 Column {
                     CoverImage(
-                        url = repo.coverArtUrl(artist.coverArt, 256),
+                        url = repo.coverArtUrl(artist.coverArt, 400),
                         cacheKey = "ar-${artist.id}",
-                        sizePx = 256,
+                        sizePx = 400,
                         fallbackLetter = artist.name,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                     )

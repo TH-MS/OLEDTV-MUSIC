@@ -56,6 +56,7 @@ fun ArtistDetailScreen(
     artist: ArtistDto,
     gridState: LazyGridState,
     lastIndex: MutableIntState,
+    columns: Int,
     onAlbumClick: (albums: List<AlbumDto>, index: Int) -> Unit,
 ) {
     var state by remember { mutableStateOf<Load<List<AlbumDto>>>(Load.Loading) }
@@ -73,7 +74,7 @@ fun ArtistDetailScreen(
         when (val s = state) {
             is Load.Loading -> StatusPane("Loading albums…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> AlbumGrid(repo, s.value, gridState, lastIndex, onAlbumClick)
+            is Load.Ok -> AlbumGrid(repo, s.value, gridState, lastIndex, onAlbumClick, columns)
         }
     }
 }
@@ -85,13 +86,14 @@ private fun AlbumGrid(
     gridState: LazyGridState,
     lastIndex: MutableIntState,
     onAlbumClick: (List<AlbumDto>, Int) -> Unit,
+    columns: Int,
 ) {
     if (albums.isEmpty()) { StatusPane("No albums found for this artist."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, albums.lastIndex) }
     val startFocus = remember { FocusRequester() }
 
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(190.dp),
+        columns = if (columns > 0) GridCells.Fixed(columns) else GridCells.Adaptive(190.dp),
         state = gridState,
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
@@ -107,9 +109,9 @@ private fun AlbumGrid(
             ) {
                 Column {
                     CoverImage(
-                        url = repo.coverArtUrl(album.coverArt, 320),
+                        url = repo.coverArtUrl(album.coverArt, 480),
                         cacheKey = "al-${album.id}",
-                        sizePx = 320,
+                        sizePx = 480,
                         fallbackLetter = album.name,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                     )
@@ -152,9 +154,9 @@ fun AlbumTracklistScreen(
     Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
         Column(Modifier.width(300.dp).fillMaxHeight()) {
             CoverImage(
-                url = repo.coverArtUrl(album.coverArt, 480),
+                url = repo.coverArtUrl(album.coverArt, 640),
                 cacheKey = "al-${album.id}",
-                sizePx = 480,
+                sizePx = 640,
                 fallbackLetter = album.name,
                 modifier = Modifier.size(280.dp),
             )

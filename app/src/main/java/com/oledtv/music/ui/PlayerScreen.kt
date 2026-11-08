@@ -4,6 +4,8 @@ package com.oledtv.music.ui
 
 import android.content.Context
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -25,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -44,11 +47,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.nativeKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
@@ -79,6 +86,7 @@ import com.oledtv.music.data.SongDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -96,6 +104,8 @@ class PlaybackManager private constructor(context: Context) {
 
     companion object {
         const val KEY_COVER = "cover"
+        const val KEY_TRACK_NO = "trackNo"
+        const val KEY_TRACK_TOTAL = "trackTotal"
         @Volatile private var instance: PlaybackManager? = null
         fun get(ctx: Context): PlaybackManager =
             instance ?: synchronized(this) { instance ?: PlaybackManager(ctx.applicationContext).also { instance = it } }
@@ -174,7 +184,7 @@ class PlaybackManager private constructor(context: Context) {
     }
 
     private fun toItems(repo: NavidromeRepository, album: AlbumDto, songs: List<SongDto>): List<MediaItem> =
-        songs.map { s ->
+        songs.mapIndexed { idx, s ->
             MediaItem.Builder()
                 .setMediaId(s.id)
                 .setUri(repo.streamUrl(s.id))
@@ -183,7 +193,11 @@ class PlaybackManager private constructor(context: Context) {
                         .setTitle(s.title)
                         .setArtist(s.artist ?: album.artist)
                         .setAlbumTitle(album.name)
-                        .setExtras(Bundle().apply { putString(KEY_COVER, s.coverArt ?: album.coverArt) })
+                        .setExtras(Bundle().apply {
+                            putString(KEY_COVER, s.coverArt ?: album.coverArt)
+                            putInt(KEY_TRACK_NO, idx + 1)
+                            putInt(KEY_TRACK_TOTAL, songs.size)
+                        })
                         .build(),
                 )
                 .build()
@@ -247,6 +261,8 @@ fun PixelShiftBox(shiftKey: Any?, modifier: Modifier = Modifier, content: @Compo
 
 // ───────────────────────── Player screen ─────────────────────────
 
+private val OffWhite = Color(0xFFE6E6E6)
+
 @Composable
 fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     val player = manager.player
@@ -281,68 +297,196 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     val artist = meta?.artist?.toString().orEmpty()
     val album = meta?.albumTitle?.toString().orEmpty()
     val coverId = meta?.extras?.getString(PlaybackManager.KEY_COVER)
+    val trackNo = meta?.extras?.getInt(PlaybackManager.KEY_TRACK_NO, 0) ?: 0
+    val trackTotal = meta?.extras?.getInt(PlaybackManager.KEY_TRACK_TOTAL, 0) ?: 0
+    val trackLabel = if (trackNo > 0 && trackTotal > 0) "Track $trackNo of $trackTotal" else ""
 
     val lyrics by produceState<Lyrics?>(initialValue = null, mediaId) {
         value = null
         value = if (mediaId.isEmpty()) Lyrics.EMPTY else try { repo.lyrics(mediaId, artist, title) } catch (e: CancellationException) { throw e } catch (e: Exception) { Lyrics.EMPTY }
     }
 
+    // OLED: the cover toggles the rest of the UI off/on. The cover itself always stays (and keeps pixel-shifting).
+    var uiVisible by remember { mutableStateOf(true) }
+    var noLyricsHidden by remember { mutableStateOf(false) }
+    BackHandler(enabled = !uiVisible) { uiVisible = true }
+
     val playFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { delay(50); playFocus.requestSafely() }
 
-    Row(Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 48.dp, vertical = 30.dp)) {
-        // ── Left ~45%
-        Column(Modifier.weight(0.45f).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
-            PixelShiftBox(shiftKey = mediaId) {
-                CoverImage(
-                    url = repo.coverArtUrl(coverId, 600),
-                    cacheKey = "al-cover-${coverId.orEmpty()}",
-                    sizePx = 600,
-                    fallbackLetter = album,
+    val togglePlay: () -> Unit = {
+        if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0, 0L); player.play() }
+        else if (player.playWhenReady) player.pause() else player.play()
+    }
+
+    // The whole player shifts 2-5 px on track change and every 60 s (cover included, even when the UI is hidden).
+    PixelShiftBox(shiftKey = mediaId, modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 30.dp)) {
+            // ── Left ~45%
+            Column(Modifier.weight(0.45f).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
+                FocusSurface(
+                    onClick = { uiVisible = !uiVisible },
                     modifier = Modifier.size(300.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    containerColor = Color.Transparent,
+                    focusedContainerColor = Color.Transparent,
+                    showFocus = uiVisible, // no static focus ring left on screen while the UI is hidden
+                ) {
+                    CoverImage(
+                        url = repo.coverArtUrl(coverId, 800),
+                        cacheKey = "al-cover-${coverId.orEmpty()}",
+                        sizePx = 800,
+                        fallbackLetter = album,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                if (uiVisible) {
+                    Spacer(Modifier.height(20.dp))
+                    Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(artist, fontSize = 20.sp, color = Color(0xFFCCCCCC), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(album, fontSize = 16.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(12.dp))
+                    ProgressRow(
+                        position = position,
+                        duration = duration,
+                        trackLabel = trackLabel,
+                        onSeek = { player.seekTo(it) },
+                        onTogglePlay = togglePlay,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        ControlButton(Glyph.Prev) {
+                            if (player.currentPosition > 3_000 || !player.hasPreviousMediaItem()) player.seekTo(0) else player.seekToPreviousMediaItem()
+                        }
+                        ControlButton(if (playWhenReady) Glyph.Pause else Glyph.Play, Modifier.focusRequester(playFocus), onClick = togglePlay)
+                        ControlButton(Glyph.Next) { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
+                    }
+                }
+            }
+            if (uiVisible) {
+                Spacer(Modifier.width(32.dp))
+                // ── Right ~55%
+                LyricsPane(
+                    lyrics, position, duration,
+                    noLyricsHidden = noLyricsHidden,
+                    onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
+                    modifier = Modifier.weight(0.55f).fillMaxHeight(),
                 )
             }
-            Spacer(Modifier.height(20.dp))
-            Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text(artist, fontSize = 20.sp, color = Color(0xFFCCCCCC), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(album, fontSize = 16.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(16.dp))
-            ProgressRow(position, duration)
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                ControlButton("Prev") { if (player.currentPosition > 3_000 || !player.hasPreviousMediaItem()) player.seekTo(0) else player.seekToPreviousMediaItem() }
-                ControlButton(if (playWhenReady) "Pause" else "Play", Modifier.focusRequester(playFocus)) {
-                    if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0, 0L); player.play() }
-                    else if (player.playWhenReady) player.pause() else player.play()
-                }
-                ControlButton("Next") { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
+        }
+    }
+}
+
+// Icons are drawn directly (explicit colours) so they can never end up invisible against the button background.
+private enum class Glyph { Prev, Play, Pause, Next }
+
+@Composable
+private fun GlyphIcon(glyph: Glyph, modifier: Modifier = Modifier.size(30.dp)) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val c = OffWhite
+        fun tri(x0: Float, x1: Float) = Path().apply {
+            if (x1 >= x0) { moveTo(x0, 0f); lineTo(x1, h / 2f); lineTo(x0, h) }
+            else { moveTo(x0, 0f); lineTo(x1, h / 2f); lineTo(x0, h) }
+            close()
+        }
+        when (glyph) {
+            Glyph.Play -> drawPath(tri(w * 0.15f, w * 0.95f), c)
+            Glyph.Pause -> {
+                drawRect(c, Offset(w * 0.12f, 0f), Size(w * 0.28f, h))
+                drawRect(c, Offset(w * 0.60f, 0f), Size(w * 0.28f, h))
+            }
+            Glyph.Next -> {
+                drawPath(tri(w * 0.05f, w * 0.72f), c)
+                drawRect(c, Offset(w * 0.78f, 0f), Size(w * 0.17f, h))
+            }
+            Glyph.Prev -> {
+                drawPath(tri(w * 0.95f, w * 0.28f), c)
+                drawRect(c, Offset(w * 0.05f, 0f), Size(w * 0.17f, h))
             }
         }
-        Spacer(Modifier.width(32.dp))
-        // ── Right ~55%
-        LyricsPane(lyrics, position, duration, Modifier.weight(0.55f).fillMaxHeight())
     }
 }
 
 @Composable
-private fun ControlButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, onClick: () -> Unit) {
     FocusSurface(onClick, modifier) {
-        Text(label, Modifier.padding(horizontal = 26.dp, vertical = 14.dp), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+        Box(Modifier.padding(horizontal = 34.dp, vertical = 16.dp)) { GlyphIcon(glyph) }
     }
 }
 
+/**
+ * Selectable scrubber (Apple TV / Spotify style):
+ *  - focus the bar (D-pad DOWN from the title area); it thickens and shows a thumb
+ *  - LEFT / RIGHT = -10 s / +10 s per press; holding the key accelerates (up to 60 s per step)
+ *  - the seek is committed shortly after you stop pressing; the time label previews the target
+ *  - CENTER = play / pause, UP/DOWN leave the bar as usual
+ * "Track N of M" sits centred between the elapsed and total time.
+ */
 @Composable
-private fun ProgressRow(position: State<Long>, duration: State<Long>) {
-    val pos = position.value
+private fun ProgressRow(
+    position: State<Long>,
+    duration: State<Long>,
+    trackLabel: String,
+    onSeek: (Long) -> Unit,
+    onTogglePlay: () -> Unit,
+) {
+    var focused by remember { mutableStateOf(false) }
+    var scrub by remember { mutableStateOf<Long?>(null) }
+    var commitJob by remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
+
     val dur = duration.value
-    Column {
-        Box(Modifier.fillMaxWidth().height(4.dp).background(Color(0xFF2A2A2A), RoundedCornerShape(2.dp))) {
-            val frac = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
-            Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(Color.White, RoundedCornerShape(2.dp)))
+    val pos = scrub ?: position.value
+    val frac = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
+    val barHeight = if (focused) 8.dp else 4.dp
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .onPreviewKeyEvent { ev ->
+                if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (ev.key) {
+                    Key.DirectionLeft, Key.DirectionRight -> {
+                        if (dur > 0) {
+                            val dir = if (ev.key == Key.DirectionRight) 1 else -1
+                            val repeat = ev.nativeKeyEvent.repeatCount
+                            val step = if (repeat == 0) 10_000L else (10_000L * (1 + repeat / 4)).coerceAtMost(60_000L)
+                            val target = ((scrub ?: position.value) + dir * step).coerceIn(0L, dur)
+                            scrub = target
+                            commitJob?.cancel()
+                            commitJob = scope.launch {
+                                delay(500)
+                                onSeek(target)
+                                delay(350)
+                                scrub = null
+                            }
+                        }
+                        true
+                    }
+                    Key.DirectionCenter, Key.Enter -> { onTogglePlay(); true }
+                    else -> false
+                }
+            }
+            .border(2.dp, if (focused) OffWhite else Color.Transparent, RoundedCornerShape(10.dp))
+            .focusable()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Box(Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.CenterStart) {
+            Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))
+            Box(Modifier.fillMaxWidth(frac).height(barHeight).background(OffWhite, RoundedCornerShape(4.dp)))
+            if (focused) {
+                Box(Modifier.fillMaxWidth(frac), contentAlignment = Alignment.CenterEnd) {
+                    Box(Modifier.size(16.dp).background(OffWhite, CircleShape))
+                }
+            }
         }
-        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatMs(pos), fontSize = 14.sp, color = Color(0xFF888888))
-            Text(formatMs(dur), fontSize = 14.sp, color = Color(0xFF888888))
+        Box(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            Text(formatMs(pos), Modifier.align(Alignment.CenterStart), fontSize = 14.sp, color = Color(0xFFAAAAAA))
+            Text(trackLabel, Modifier.align(Alignment.Center), fontSize = 14.sp, color = Color(0xFFAAAAAA))
+            Text(formatMs(dur), Modifier.align(Alignment.CenterEnd), fontSize = 14.sp, color = Color(0xFFAAAAAA))
         }
     }
 }
@@ -352,10 +496,13 @@ private fun ProgressRow(position: State<Long>, duration: State<Long>) {
 private val LyricDim = Color(0xFF6E6E6E)
 
 @Composable
-private fun LyricsPane(lyrics: Lyrics?, position: State<Long>, duration: State<Long>, modifier: Modifier) {
+private fun LyricsPane(
+    lyrics: Lyrics?, position: State<Long>, duration: State<Long>,
+    noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, modifier: Modifier,
+) {
     when {
         lyrics == null -> CenterNote("Loading lyrics…", modifier)
-        lyrics.isEmpty -> CenterNote("No lyrics available", modifier)
+        lyrics.isEmpty -> NoLyricsBox(noLyricsHidden, onToggleNoLyrics, modifier)
         lyrics.synced.isNotEmpty() -> SyncedLyrics(lyrics.synced, position, modifier)
         else -> PlainLyrics(lyrics.plain.orEmpty(), position, duration, modifier)
     }
@@ -364,6 +511,26 @@ private fun LyricsPane(lyrics: Lyrics?, position: State<Long>, duration: State<L
 @Composable
 private fun CenterNote(text: String, modifier: Modifier) {
     Box(modifier, contentAlignment = Alignment.Center) { Text(text, fontSize = 20.sp, color = LyricDim) }
+}
+
+/** Selectable "No lyrics available" box: click to hide the message (OLED), click again to bring it back. */
+@Composable
+private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        FocusSurface(
+            onClick = onToggle,
+            containerColor = Color.Transparent,
+            focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
+            showFocus = !hidden,
+        ) {
+            Text(
+                "No lyrics available",
+                Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
+                fontSize = 20.sp,
+                color = if (hidden) Color.Transparent else LyricDim,
+            )
+        }
+    }
 }
 
 /** Index of the last line whose timestamp <= position, or -1 before the first line. */
@@ -399,7 +566,7 @@ private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, modifier
                 line.text,
                 fontSize = 28.sp,
                 fontWeight = if (i == active) FontWeight.Bold else FontWeight.Normal,
-                color = if (i == active) Color.White else LyricDim,
+                color = if (i == active) Color(0xFFF0F0F0) else LyricDim,
             )
         }
     }
