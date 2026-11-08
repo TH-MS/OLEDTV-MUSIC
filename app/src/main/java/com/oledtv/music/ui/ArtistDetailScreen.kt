@@ -60,6 +60,7 @@ fun ArtistDetailScreen(
     gridState: LazyGridState,
     lastIndex: MutableIntState,
     columns: Int,
+    playingAlbumId: String?,
     onAlbumClick: (albums: List<AlbumDto>, index: Int) -> Unit,
 ) {
     var state by remember { mutableStateOf<Load<List<AlbumDto>>>(Load.Loading) }
@@ -77,7 +78,7 @@ fun ArtistDetailScreen(
         when (val s = state) {
             is Load.Loading -> StatusPane("Loading albums…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> AlbumGrid(repo, s.value, gridState, lastIndex, onAlbumClick, columns)
+            is Load.Ok -> AlbumGrid(repo, s.value, gridState, lastIndex, onAlbumClick, columns, playingAlbumId)
         }
     }
 }
@@ -90,6 +91,7 @@ private fun AlbumGrid(
     lastIndex: MutableIntState,
     onAlbumClick: (List<AlbumDto>, Int) -> Unit,
     columns: Int,
+    playingAlbumId: String?,
 ) {
     if (albums.isEmpty()) { StatusPane("No albums found for this artist."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, albums.lastIndex) }
@@ -106,6 +108,7 @@ private fun AlbumGrid(
         itemsIndexed(albums, key = { _, a -> a.id }) { i, album ->
             FocusSurface(
                 onClick = { onAlbumClick(albums, i) },
+                playing = album.id == playingAlbumId,
                 modifier = Modifier
                     .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i }
                     .then(if (i == startIndex) Modifier.focusRequester(startFocus) else Modifier),
@@ -143,6 +146,7 @@ fun AlbumTracklistScreen(
     albumIndex: Int,
     listState: LazyListState,
     lastIndex: MutableIntState,
+    playingSongId: String?,
     onPlay: (songs: List<SongDto>, startIndex: Int) -> Unit,
 ) {
     val album = albums[albumIndex]
@@ -178,7 +182,7 @@ fun AlbumTracklistScreen(
             when (val s = state) {
                 is Load.Loading -> StatusPane("Loading tracks…")
                 is Load.Err -> StatusPane(s.message) { reload++ }
-                is Load.Ok -> TrackList(s.value, listState, lastIndex, onPlay)
+                is Load.Ok -> TrackList(s.value, listState, lastIndex, onPlay, playingSongId)
             }
         }
     }
@@ -190,6 +194,7 @@ private fun TrackList(
     listState: LazyListState,
     lastIndex: MutableIntState,
     onPlay: (List<SongDto>, Int) -> Unit,
+    playingSongId: String?,
 ) {
     if (songs.isEmpty()) { StatusPane("This album has no tracks."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, songs.lastIndex) }
@@ -205,6 +210,7 @@ private fun TrackList(
         itemsIndexed(songs, key = { _, s -> s.id }) { i, song ->
             FocusSurface(
                 onClick = { onPlay(songs, i) },
+                playing = song.id == playingSongId,
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i }

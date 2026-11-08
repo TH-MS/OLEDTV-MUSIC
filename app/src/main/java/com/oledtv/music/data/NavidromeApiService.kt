@@ -146,6 +146,12 @@ object LrcParser {
 
 // ───────────────────────── Repository ─────────────────────────
 
+/** Sort key that ignores a leading "The " (The Police sits under P, The Beautiful South under B). */
+fun artistSortKey(name: String): String {
+    val n = name.trim().lowercase()
+    return if (n.startsWith("the ") && n.length > 4) n.removePrefix("the ").trim() else n
+}
+
 class NavidromeRepository(val config: ServerConfig) {
 
     private val authInterceptor = Interceptor { chain ->
@@ -189,7 +195,7 @@ class NavidromeRepository(val config: ServerConfig) {
         val primary = api.getArtists().unwrap().artists?.index.orEmpty()
             .flatMap { it.artist.orEmpty() }
         val result = primary.ifEmpty { artistsFromAlbumList() }
-            .sortedBy { it.name.lowercase() }
+            .sortedBy { artistSortKey(it.name) }
         artistsCache = result
         return result
     }

@@ -199,18 +199,18 @@ fun OledApp(prefs: Prefs) {
                 }
             } else when (screen) {
                 is Screen.Artists -> AlbumArtistsScreen(
-                    repo = repo, gridState = screen.grid, lastIndex = screen.last, columns = artistColumns,
+                    repo = repo, gridState = screen.grid, lastIndex = screen.last, columns = artistColumns, playingArtistId = manager.nowArtistId,
                     onArtistClick = { stack.add(Screen.Artist(it)) },
                     onSettings = { stack.add(Screen.Config) },
                     onNowPlaying = if (manager.hasQueue) ({ nowPlayingStack(true) }) else null,
                 )
                 is Screen.Artist -> ArtistDetailScreen(
-                    repo = repo, artist = screen.artist, gridState = screen.grid, lastIndex = screen.last, columns = albumColumns,
+                    repo = repo, artist = screen.artist, gridState = screen.grid, lastIndex = screen.last, columns = albumColumns, playingAlbumId = manager.nowAlbumId,
                     onAlbumClick = { albums, i -> stack.add(Screen.Tracks(albums, i)) },
                 )
                 is Screen.Tracks -> AlbumTracklistScreen(
                     repo = repo, albums = screen.albums, albumIndex = screen.index,
-                    listState = screen.list, lastIndex = screen.last,
+                    listState = screen.list, lastIndex = screen.last, playingSongId = manager.nowSongId,
                     onPlay = { songs, start ->
                         manager.artist = stack.filterIsInstance<Screen.Artist>().lastOrNull()?.artist
                         manager.play(repo, screen.albums, screen.index, songs, start)

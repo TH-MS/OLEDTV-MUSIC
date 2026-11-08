@@ -11,6 +11,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -45,7 +46,9 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -62,6 +65,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -160,6 +164,10 @@ class PlaybackManager private constructor(context: Context) {
             .build()
 
         player.addListener(object : Player.Listener {
+            override fun onEvents(p: Player, events: Player.Events) = updateNowPlaying()
+        })
+
+        player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) retryCount = 0
             }
@@ -183,6 +191,22 @@ class PlaybackManager private constructor(context: Context) {
     /** True while the remaining tracks of the current album are shuffled (UI highlights the button). */
     var shuffled by mutableStateOf(false)
 
+    /** Ids of what is playing right now (null when nothing is playing) - used for the pulsating borders. */
+    var nowSongId by mutableStateOf<String?>(null)
+    var nowAlbumId by mutableStateOf<String?>(null)
+    var nowArtistId by mutableStateOf<String?>(null)
+
+    /** 0 = Fast, 1 = Medium, 2 = Slow: speed of the drifting cover. */
+    var driftSpeed by mutableStateOf(0)
+
+    private fun updateNowPlaying() {
+        val item = player.currentMediaItem
+        val active = item != null && player.playbackState != Player.STATE_ENDED && player.playbackState != Player.STATE_IDLE
+        nowSongId = if (active) item?.mediaId else null
+        nowAlbumId = if (active) albums.getOrNull(currentAlbumIndex())?.id else null
+        nowArtistId = if (active) artist?.id else null
+    }
+
     /** Album Artist whose albums are queued (used to rebuild navigation for "Now Playing"). */
     var artist: ArtistDto? = null
     val queueAlbums: List<AlbumDto> get() = albums
@@ -199,6 +223,7 @@ class PlaybackManager private constructor(context: Context) {
         player.prepare()
         player.play()
         shuffled = false
+        updateNowPlaying()
     }
 
     private fun toItems(repo: NavidromeRepository, album: AlbumDto, songs: List<SongDto>, albumIdx: Int): List<MediaItem> =
@@ -223,21 +248,37 @@ class PlaybackManager private constructor(context: Context) {
         }
 
     /**
-     * Shuffles ONLY the remaining tracks of the album that is playing (the current track keeps playing).
-     * Press again to restore album order. Nothing else is queued, so the next album chosen plays in normal order.
+     * Shuffle toggle for the album that is playing.
+     * ON : shuffles only the tracks still to come (current track keeps playing).
+     * OFF: restores album order around the current track, so Back/Forward continue from where you are
+     *      (shuffled to track 10, then off -> Back = track 9, Forward = track 11).
+     * Nothing else is queued, so the next album chosen plays in normal order.
      */
     fun toggleShuffleCurrentAlbum() {
         val cur = player.currentMediaItemIndex
         val albumIdx = currentAlbumIndex()
         if (cur < 0 || albumIdx < 0) return
         fun albumOf(i: Int) = player.getMediaItemAt(i).mediaMetadata.extras?.getInt(KEY_ALBUM_INDEX, -1) ?: -1
+        fun orderOf(m: MediaItem) = m.mediaMetadata.extras?.getInt(KEY_TRACK_NO, 0) ?: 0
+        var start = cur
+        while (start > 0 && albumOf(start - 1) == albumIdx) start--
         var end = cur
         while (end + 1 < player.mediaItemCount && albumOf(end + 1) == albumIdx) end++
-        if (end <= cur) return
-        val rest = (cur + 1..end).map { player.getMediaItemAt(it) }
-        val reordered = if (shuffled) rest.sortedBy { it.mediaMetadata.extras?.getInt(KEY_TRACK_NO, 0) ?: 0 } else rest.shuffled()
-        player.replaceMediaItems(cur + 1, end + 1, reordered)
+
+        if (!shuffled) {
+            if (end <= cur) return
+            val rest = (cur + 1..end).map { player.getMediaItemAt(it) }
+            player.replaceMediaItems(cur + 1, end + 1, rest.shuffled())
+        } else {
+            val curOrder = orderOf(player.getMediaItemAt(cur))
+            val others = (start..end).filter { it != cur }.map { player.getMediaItemAt(it) }
+            val after = others.filter { orderOf(it) > curOrder }.sortedBy { orderOf(it) }
+            val before = others.filter { orderOf(it) < curOrder }.sortedBy { orderOf(it) }
+            if (end > cur || after.isNotEmpty()) player.replaceMediaItems(cur + 1, end + 1, after)
+            if (cur > start || before.isNotEmpty()) player.replaceMediaItems(start, cur, before)
+        }
         shuffled = !shuffled
+        updateNowPlaying()
     }
 }
 
@@ -317,8 +358,53 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     var noLyricsHidden by remember { mutableStateOf(false) }
     BackHandler(enabled = !uiVisible) { uiVisible = true }
 
+    // Cover drift speed (click the cover to cycle) + a short label shown above the cover.
+    val speedNames = remember { listOf("Fast", "Medium", "Slow") }
+    val speedFactors = remember { floatArrayOf(1f, 0.5f, 0.25f) }
+    var speedLabel by remember { mutableStateOf<String?>(null) }
+    var speedTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(speedTick) {
+        if (speedTick > 0) {
+            speedLabel = speedNames[manager.driftSpeed]
+            delay(1_500)
+            speedLabel = null
+        }
+    }
+
+    // Holding SELECT on any element for 5 s hides the whole UI (hold again, press a direction or Back to restore).
+    val scope = rememberCoroutineScope()
+    val hold = remember { object { var job: Job? = null; var fired = false } }
+    val onRootKey: (KeyEvent) -> Boolean = { ev ->
+        val isSelect = ev.key == Key.DirectionCenter || ev.key == Key.Enter || ev.key == Key.NumPadEnter
+        val isDirection = ev.key == Key.DirectionUp || ev.key == Key.DirectionDown ||
+            ev.key == Key.DirectionLeft || ev.key == Key.DirectionRight
+        when {
+            !uiVisible && isDirection && ev.type == KeyEventType.KeyDown -> { uiVisible = true; true }
+            isSelect && ev.type == KeyEventType.KeyDown -> {
+                if (ev.nativeKeyEvent.repeatCount == 0 && hold.job == null) {
+                    hold.fired = false
+                    hold.job = scope.launch {
+                        delay(5_000)
+                        hold.fired = true
+                        uiVisible = !uiVisible
+                    }
+                }
+                false
+            }
+            isSelect && ev.type == KeyEventType.KeyUp -> {
+                hold.job?.cancel(); hold.job = null
+                if (hold.fired) { hold.fired = false; true } else false // swallow the release that ends a long hold
+            }
+            else -> false
+        }
+    }
+
     val playFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { delay(50); playFocus.requestSafely() }
+    val coverFocus = remember { FocusRequester() }
+    LaunchedEffect(uiVisible) {
+        delay(50)
+        if (uiVisible) playFocus.requestSafely() else coverFocus.requestSafely()
+    }
 
     val togglePlay: () -> Unit = {
         if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0, 0L); player.play() }
@@ -326,16 +412,16 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     }
 
     // The whole player shifts 2-5 px on track change and every 60 s (cover included, even when the UI is hidden).
-    PixelShiftBox(shiftKey = mediaId, modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    PixelShiftBox(shiftKey = mediaId, modifier = Modifier.fillMaxSize().background(Color.Black).onPreviewKeyEvent(onRootKey)) {
         Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
             // ── Left ~45%
             Column(Modifier.weight(0.45f).fillMaxHeight()) {
                 // Text, progress bar and buttons are measured first; the cover takes whatever height is left,
                 // so long titles shrink the cover instead of pushing the controls off-screen (any 16:9 size).
-                DriftingCover(Modifier.weight(1f).fillMaxWidth()) { coverSize ->
+                DriftingCover(Modifier.weight(1f).fillMaxWidth(), speedFactor = speedFactors[manager.driftSpeed], label = speedLabel) { coverSize ->
                     FocusSurface(
-                        onClick = { uiVisible = !uiVisible },
-                        modifier = Modifier.size(coverSize),
+                        onClick = { manager.driftSpeed = (manager.driftSpeed + 1) % 3; speedTick++ },
+                        modifier = Modifier.size(coverSize).focusRequester(coverFocus),
                         shape = RoundedCornerShape(8.dp),
                         containerColor = Color.Transparent,
                         focusedContainerColor = Color.Transparent,
@@ -445,33 +531,51 @@ private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, active: B
 }
 
 /**
- * OLED burn-in protection for the cover: it drifts very slowly and continuously inside its window,
- * bouncing off the edges like a DVD logo (different periods on X and Y give a non-repeating path).
- * Only the draw layer is updated, so there is no recomposition per frame.
+ * OLED burn-in protection for the cover: it drifts slowly and continuously inside its window, bouncing off the
+ * edges like a DVD logo. Position is integrated per frame (sub-pixel, draw-phase only) so it is smooth, and a
+ * speed change only alters the velocity, never the position. [speedFactor] 1 = Fast, 0.5 = Medium, 0.25 = Slow.
+ * [label] (e.g. "Medium") is shown above the cover and moves with it.
  */
 @Composable
-private fun DriftingCover(modifier: Modifier, content: @Composable (Dp) -> Unit) {
+private fun DriftingCover(modifier: Modifier, speedFactor: Float, label: String?, content: @Composable (Dp) -> Unit) {
     BoxWithConstraints(modifier) {
-        val cover = minOf(maxWidth, maxHeight) * 0.9f
-        val slackX = (maxWidth - cover).value.coerceAtLeast(0f)
-        val slackY = (maxHeight - cover).value.coerceAtLeast(0f)
+        val labelH = 24.dp
+        val cover = minOf(maxWidth, maxHeight - labelH) * 0.9f
         val density = LocalDensity.current.density
-        val transition = rememberInfiniteTransition(label = "drift")
-        val fx = transition.animateFloat(
-            0f, 1f,
-            infiniteRepeatable(tween((slackX / 4f * 1000).toInt().coerceAtLeast(1500), easing = LinearEasing), RepeatMode.Reverse),
-            label = "x",
-        )
-        val fy = transition.animateFloat(
-            0f, 1f,
-            infiniteRepeatable(tween((slackY / 3f * 1000).toInt().coerceAtLeast(1500), easing = LinearEasing), RepeatMode.Reverse),
-            label = "y",
-        )
-        Box(
+        val slackX = ((maxWidth - cover).value * density).coerceAtLeast(0f)
+        val slackY = ((maxHeight - cover - labelH).value * density).coerceAtLeast(0f)
+        val px = remember { mutableFloatStateOf(0f) }
+        val py = remember { mutableFloatStateOf(0f) }
+        val factor = rememberUpdatedState(speedFactor)
+
+        LaunchedEffect(slackX, slackY) {
+            var dirX = 1f
+            var dirY = 1f
+            var last = withFrameNanos { it }
+            while (true) {
+                val now = withFrameNanos { it }
+                val dt = ((now - last) / 1_000_000_000f).coerceAtMost(0.1f)
+                last = now
+                val step = factor.value * density * dt
+                var x = px.floatValue + dirX * 4f * step      // 4 dp/s at Fast
+                var y = py.floatValue + dirY * 3f * step      // 3 dp/s at Fast
+                if (x > slackX) { x = slackX - (x - slackX); dirX = -1f } else if (x < 0f) { x = -x; dirX = 1f }
+                if (y > slackY) { y = slackY - (y - slackY); dirY = -1f } else if (y < 0f) { y = -y; dirY = 1f }
+                px.floatValue = x.coerceIn(0f, slackX)
+                py.floatValue = y.coerceIn(0f, slackY)
+            }
+        }
+
+        Column(
             Modifier
-                .size(cover)
-                .graphicsLayer { translationX = fx.value * slackX * density; translationY = fy.value * slackY * density },
-        ) { content(cover) }
+                .width(cover)
+                .graphicsLayer { translationX = px.floatValue; translationY = py.floatValue },
+        ) {
+            Box(Modifier.height(labelH).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                if (label != null) Text(label, fontSize = 16.sp, color = OffWhite)
+            }
+            content(cover)
+        }
     }
 }
 
@@ -506,6 +610,9 @@ private fun ProgressRow(
             .fillMaxWidth()
             .onFocusChanged { focused = it.isFocused }
             .onPreviewKeyEvent { ev ->
+                if (ev.type == KeyEventType.KeyUp && (ev.key == Key.DirectionCenter || ev.key == Key.Enter)) {
+                    onTogglePlay(); return@onPreviewKeyEvent true
+                }
                 if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (ev.key) {
                     Key.DirectionLeft, Key.DirectionRight -> {
@@ -525,7 +632,7 @@ private fun ProgressRow(
                         }
                         true
                     }
-                    Key.DirectionCenter, Key.Enter -> { onTogglePlay(); true }
+                    Key.DirectionCenter, Key.Enter -> true
                     else -> false
                 }
             }
@@ -575,9 +682,17 @@ private fun CenterNote(text: String, modifier: Modifier) {
 /** Selectable "No lyrics available" box: click to hide the message (OLED), click again to bring it back. */
 @Composable
 private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifier) {
+    // Fully visible for 5 s, then fades linearly to nothing by 10 s (restarts for every track).
+    val fade = remember { Animatable(1f) }
+    LaunchedEffect(Unit) {
+        fade.snapTo(1f)
+        delay(5_000)
+        fade.animateTo(0f, tween(5_000, easing = LinearEasing))
+    }
     Box(modifier, contentAlignment = Alignment.Center) {
         FocusSurface(
             onClick = onToggle,
+            modifier = Modifier.graphicsLayer { alpha = fade.value },
             containerColor = Color.Transparent,
             focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
             showFocus = !hidden,

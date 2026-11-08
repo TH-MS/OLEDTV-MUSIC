@@ -2,7 +2,22 @@
 
 package com.oledtv.music.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.unit.Dp
+import kotlin.math.PI
+import kotlin.math.sin
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,6 +90,7 @@ fun FocusSurface(
     containerColor: Color = Color(0xFF121212),
     focusedContainerColor: Color = Color(0xFF2A2A2A),
     showFocus: Boolean = true,
+    playing: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Surface(
@@ -91,11 +107,40 @@ fun FocusSurface(
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = if (showFocus) 1.08f else 1f),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = if (showFocus) Border(BorderStroke(3.dp, Color(0xFFE6E6E6)), shape = shape) else Border.None,
+            focusedBorder = if (showFocus && !playing) Border(BorderStroke(3.dp, Color(0xFFE6E6E6)), shape = shape) else Border.None,
         ),
     ) {
         // Explicit content colour so text never inherits an unexpected (invisible) colour.
         CompositionLocalProvider(LocalContentColor provides Color(0xFFE6E6E6)) { content() }
+        // Currently playing artist / album / track: a pulsating colour travels around the edge.
+        if (playing) Box(Modifier.matchParentSize().nowPlayingBorder(shape))
+    }
+}
+
+private val NpA = Color(0xFF00E5FF)
+private val NpB = Color(0xFFFF4DFF)
+
+/** Pulsating, colour-cycling border. Animation state is only read in the draw phase (no recomposition per frame). */
+@Composable
+fun Modifier.nowPlayingBorder(shape: Shape, width: Dp = 4.dp): Modifier {
+    val t = rememberInfiniteTransition(label = "np")
+    val phase = t.animateFloat(0f, 1f, infiniteRepeatable(tween(3600, easing = LinearEasing)), label = "phase")
+    val pulse = t.animateFloat(0.55f, 1f, infiniteRepeatable(tween(1100, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse")
+    return this.drawWithContent {
+        drawContent()
+        val p = phase.value
+        val n = 24
+        val stops = Array(n + 1) { i ->
+            val f = i / n.toFloat()
+            val u = ((f - p) % 1f + 1f) % 1f
+            f to lerp(NpA, NpB, (sin(2.0 * PI * u).toFloat() + 1f) / 2f)
+        }
+        drawOutline(
+            outline = shape.createOutline(size, layoutDirection, this),
+            brush = Brush.sweepGradient(*stops),
+            alpha = pulse.value,
+            style = Stroke(width.toPx()),
+        )
     }
 }
 
@@ -158,6 +203,7 @@ fun AlbumArtistsScreen(
     gridState: LazyGridState,
     lastIndex: MutableIntState,
     columns: Int,
+    playingArtistId: String?,
     onArtistClick: (ArtistDto) -> Unit,
     onSettings: () -> Unit,
     onNowPlaying: (() -> Unit)?,
@@ -184,7 +230,7 @@ fun AlbumArtistsScreen(
         when (val s = state) {
             is Load.Loading -> StatusPane("Loading artists…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns)
+            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId)
         }
     }
 }
@@ -197,6 +243,7 @@ private fun ArtistGrid(
     lastIndex: MutableIntState,
     onClick: (ArtistDto) -> Unit,
     columns: Int,
+    playingArtistId: String?,
 ) {
     if (artists.isEmpty()) { StatusPane("No album artists found on this server."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, artists.lastIndex) }
@@ -213,6 +260,7 @@ private fun ArtistGrid(
         itemsIndexed(artists, key = { _, a -> a.id }) { i, artist ->
             FocusSurface(
                 onClick = { onClick(artist) },
+                playing = artist.id == playingArtistId,
                 modifier = Modifier
                     .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i }
                     .then(if (i == startIndex) Modifier.focusRequester(startFocus) else Modifier),
