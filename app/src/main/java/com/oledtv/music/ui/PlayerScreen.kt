@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -78,6 +79,7 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.Text
 import com.oledtv.music.data.AlbumDto
+import com.oledtv.music.data.ArtistDto
 import com.oledtv.music.data.LyricLine
 import com.oledtv.music.data.Lyrics
 import com.oledtv.music.data.NavidromeRepository
@@ -104,6 +106,7 @@ class PlaybackManager private constructor(context: Context) {
     companion object {
         const val KEY_COVER = "cover"
         const val KEY_TRACK_NO = "trackNo"
+        const val KEY_ALBUM_INDEX = "albumIndex"
         const val KEY_TRACK_TOTAL = "trackTotal"
         @Volatile private var instance: PlaybackManager? = null
         fun get(ctx: Context): PlaybackManager =
@@ -170,19 +173,25 @@ class PlaybackManager private constructor(context: Context) {
 
     val hasQueue: Boolean get() = player.mediaItemCount > 0
 
+    /** Album Artist whose albums are queued (used to rebuild navigation for "Now Playing"). */
+    var artist: ArtistDto? = null
+    val queueAlbums: List<AlbumDto> get() = albums
+    /** Index (in [queueAlbums]) of the album the current track belongs to, or -1. */
+    fun currentAlbumIndex(): Int = player.currentMediaItem?.mediaMetadata?.extras?.getInt(KEY_ALBUM_INDEX, -1) ?: -1
+
     fun play(repo: NavidromeRepository, albums: List<AlbumDto>, albumIndex: Int, songs: List<SongDto>, startIndex: Int) {
         this.repo = repo
         this.albums = albums
         loadedAlbumIndex = albumIndex
         appending = false
         retryCount = 0
-        player.setMediaItems(toItems(repo, albums[albumIndex], songs), startIndex, 0L)
+        player.setMediaItems(toItems(repo, albums[albumIndex], songs, albumIndex), startIndex, 0L)
         player.prepare()
         player.play()
         maybeAppendNextAlbum()
     }
 
-    private fun toItems(repo: NavidromeRepository, album: AlbumDto, songs: List<SongDto>): List<MediaItem> =
+    private fun toItems(repo: NavidromeRepository, album: AlbumDto, songs: List<SongDto>, albumIdx: Int): List<MediaItem> =
         songs.mapIndexed { idx, s ->
             MediaItem.Builder()
                 .setMediaId(s.id)
@@ -196,6 +205,7 @@ class PlaybackManager private constructor(context: Context) {
                             putString(KEY_COVER, s.coverArt ?: album.coverArt)
                             putInt(KEY_TRACK_NO, idx + 1)
                             putInt(KEY_TRACK_TOTAL, songs.size)
+                            putInt(KEY_ALBUM_INDEX, albumIdx)
                         })
                         .build(),
                 )
@@ -214,7 +224,7 @@ class PlaybackManager private constructor(context: Context) {
                     val songs = r.songsOf(albums[next].id)
                     if (songs.isNotEmpty()) {
                         val firstNewIndex = player.mediaItemCount
-                        player.addMediaItems(toItems(r, albums[next], songs))
+                        player.addMediaItems(toItems(r, albums[next], songs, next))
                         loadedAlbumIndex = next
                         if (player.playbackState == Player.STATE_ENDED) { // queue ran dry while we were fetching
                             player.seekTo(firstNewIndex, 0L); player.play()
@@ -320,28 +330,32 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
 
     // The whole player shifts 2-5 px on track change and every 60 s (cover included, even when the UI is hidden).
     PixelShiftBox(shiftKey = mediaId, modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 30.dp)) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
             // ── Left ~45%
-            Column(Modifier.weight(0.45f).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
-                FocusSurface(
-                    onClick = { uiVisible = !uiVisible },
-                    modifier = Modifier.size(300.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    containerColor = Color.Transparent,
-                    focusedContainerColor = Color.Transparent,
-                    showFocus = uiVisible, // no static focus ring left on screen while the UI is hidden
-                ) {
-                    CoverImage(
-                        url = repo.coverArtUrl(coverId, 800),
-                        cacheKey = "al-cover-${coverId.orEmpty()}",
-                        sizePx = 800,
-                        fallbackLetter = album,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+            Column(Modifier.weight(0.45f).fillMaxHeight()) {
+                // Text, progress bar and buttons are measured first; the cover takes whatever height is left,
+                // so long titles shrink the cover instead of pushing the controls off-screen (any 16:9 size).
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                    FocusSurface(
+                        onClick = { uiVisible = !uiVisible },
+                        modifier = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true),
+                        shape = RoundedCornerShape(8.dp),
+                        containerColor = Color.Transparent,
+                        focusedContainerColor = Color.Transparent,
+                        showFocus = uiVisible, // no static focus ring left on screen while the UI is hidden
+                    ) {
+                        CoverImage(
+                            url = repo.coverArtUrl(coverId, 800),
+                            cacheKey = "al-cover-${coverId.orEmpty()}",
+                            sizePx = 800,
+                            fallbackLetter = album,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
                 if (uiVisible) {
-                    Spacer(Modifier.height(20.dp))
-                    Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(12.dp))
+                    Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(artist, fontSize = 20.sp, color = Color(0xFFCCCCCC), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(album, fontSize = 16.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(12.dp))
@@ -411,7 +425,7 @@ private fun GlyphIcon(glyph: Glyph, modifier: Modifier = Modifier.size(30.dp)) {
 @Composable
 private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, onClick: () -> Unit) {
     FocusSurface(onClick, modifier) {
-        Box(Modifier.padding(horizontal = 34.dp, vertical = 16.dp)) { GlyphIcon(glyph) }
+        Box(Modifier.padding(horizontal = 32.dp, vertical = 12.dp)) { GlyphIcon(glyph, Modifier.size(26.dp)) }
     }
 }
 
@@ -471,7 +485,7 @@ private fun ProgressRow(
             }
             .border(2.dp, if (focused) OffWhite else Color.Transparent, RoundedCornerShape(10.dp))
             .focusable()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Box(Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.CenterStart) {
             Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))

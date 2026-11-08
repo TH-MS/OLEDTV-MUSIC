@@ -3,6 +3,7 @@
 package com.oledtv.music.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -153,15 +154,17 @@ fun AlbumTracklistScreen(
 
     Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
         Column(Modifier.width(300.dp).fillMaxHeight()) {
-            CoverImage(
-                url = repo.coverArtUrl(album.coverArt, 640),
-                cacheKey = "al-${album.id}",
-                sizePx = 640,
-                fallbackLetter = album.name,
-                modifier = Modifier.size(280.dp),
-            )
-            Spacer(Modifier.padding(8.dp))
-            Text(album.name, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopStart) {
+                CoverImage(
+                    url = repo.coverArtUrl(album.coverArt, 640),
+                    cacheKey = "al-${album.id}",
+                    sizePx = 640,
+                    fallbackLetter = album.name,
+                    modifier = Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true),
+                )
+            }
+            Spacer(Modifier.padding(6.dp))
+            Text(album.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(album.artist.orEmpty(), fontSize = 18.sp, color = Color(0xFFBBBBBB), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(album.year?.toString().orEmpty(), fontSize = 16.sp, color = Color(0xFF888888))
         }
