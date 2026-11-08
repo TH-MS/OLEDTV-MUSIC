@@ -437,7 +437,9 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                         )
                     }
                 }
-                if (uiVisible) {
+                // Hidden = fully transparent but still laid out, so the cover keeps exactly the same size and
+                // drift area (and nothing is drawn: true OLED black).
+                Column(Modifier.fillMaxWidth().graphicsLayer { alpha = if (uiVisible) 1f else 0f }) {
                     Spacer(Modifier.height(12.dp))
                     Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(artist, fontSize = 20.sp, color = Color(0xFFCCCCCC), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -461,14 +463,14 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                     }
                 }
             }
-            if (uiVisible) {
+            run {
                 Spacer(Modifier.width(32.dp))
                 // ── Right ~55%
                 LyricsPane(
                     lyrics, position, duration,
                     noLyricsHidden = noLyricsHidden,
                     onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
-                    modifier = Modifier.weight(0.55f).fillMaxHeight(),
+                    modifier = Modifier.weight(0.55f).fillMaxHeight().graphicsLayer { alpha = if (uiVisible) 1f else 0f },
                 )
             }
         }
