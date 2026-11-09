@@ -374,43 +374,6 @@ private fun ArtistGrid(
     val requesters = remember(artists) { List(artists.size) { FocusRequester() } }
     val startFocus = requesters[startIndex]
     val scope = rememberCoroutineScope()
-    val hold = remember { object { var job: Job? = null; var fired = false } }
-
-    // Hold UP for 2 s -> jump to the top with the Now Playing button highlighted (not pressed).
-    // Hold DOWN for 2 s -> jump to the last artist. Releasing after a jump is swallowed.
-    val onKey: (KeyEvent) -> Boolean = { ev ->
-        val up = ev.key == Key.DirectionUp
-        val down = ev.key == Key.DirectionDown
-        if (!up && !down) false
-        else when (ev.type) {
-            KeyEventType.KeyDown -> {
-                if (hold.fired) true
-                else {
-                    if (ev.nativeKeyEvent.repeatCount == 0 && hold.job == null) {
-                        hold.job = scope.launch {
-                            delay(2_000)
-                            hold.fired = true
-                            if (up) {
-                                gridState.scrollToItem(0)
-                                delay(80)
-                                topFocus.requestSafely()
-                            } else {
-                                gridState.scrollToItem(artists.lastIndex)
-                                delay(80)
-                                requesters.last().requestSafely()
-                            }
-                        }
-                    }
-                    false
-                }
-            }
-            KeyEventType.KeyUp -> {
-                hold.job?.cancel(); hold.job = null
-                if (hold.fired) { hold.fired = false; true } else false
-            }
-            else -> false
-        }
-    }
 
     LazyVerticalGrid(
         columns = if (columns > 0) GridCells.Fixed(columns) else GridCells.Adaptive(170.dp),
@@ -418,7 +381,7 @@ private fun ArtistGrid(
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
         verticalArrangement = Arrangement.spacedBy(22.dp),
-        modifier = Modifier.fillMaxSize().onPreviewKeyEvent(onKey),
+        modifier = Modifier.fillMaxSize(),
     ) {
         itemsIndexed(artists, key = { _, a -> a.id }) { i, artist ->
             FocusSurface(

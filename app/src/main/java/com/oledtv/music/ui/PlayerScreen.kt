@@ -492,6 +492,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                     lyrics, position, duration,
                     noLyricsHidden = noLyricsHidden,
                     onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
+                    onSeek = { ms -> player.seekTo(ms) },
                     modifier = Modifier.weight(0.55f).fillMaxHeight().graphicsLayer { alpha = if (uiVisible) 1f else 0f },
                 )
             }
@@ -693,12 +694,12 @@ private val LyricDim = Color(0xFF6E6E6E)
 @Composable
 private fun LyricsPane(
     lyrics: Lyrics?, position: State<Long>, duration: State<Long>,
-    noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, modifier: Modifier,
+    noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit, modifier: Modifier,
 ) {
     when {
         lyrics == null -> CenterNote("Loading lyrics…", modifier)
         lyrics.isEmpty -> NoLyricsBox(noLyricsHidden, onToggleNoLyrics, modifier)
-        lyrics.synced.isNotEmpty() -> SyncedLyrics(lyrics.synced, position, modifier)
+        lyrics.synced.isNotEmpty() -> SyncedLyrics(lyrics.synced, position, onSeek, modifier)
         else -> PlainLyrics(lyrics.plain.orEmpty(), position, duration, modifier)
     }
 }
@@ -747,30 +748,83 @@ private fun activeIndex(lines: List<LyricLine>, posMs: Long): Int {
 }
 
 @Composable
-private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, modifier: Modifier) {
+private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: (Long) -> Unit, modifier: Modifier) {
     val listState = rememberLazyListState()
+    val density = LocalDensity.current
+    val padPx = with(density) { 220.dp.toPx() }
     // Reads `position` inside derivedStateOf: recomposes only when the active line actually changes.
     val active by remember(lines) { derivedStateOf { activeIndex(lines, position.value) } }
 
-    LaunchedEffect(lines, active) {
+    // Browse mode (like Spotify / Apple Music): UP/DOWN moves a cursor through the lyrics without touching
+    // playback; SELECT on a line jumps the song there; leaving the pane or ~6 s of no input snaps back to
+    // following the current line.
+    var browsing by remember { mutableStateOf(false) }
+    var cursor by remember { mutableIntStateOf(0) }
+    var keyTick by remember { mutableIntStateOf(0) }
+    var focused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(browsing, keyTick) {
+        if (browsing) { delay(6_000); browsing = false }
+    }
+
+    // The highlighted line sits ~60% down the pane, leaving plenty of upcoming lines visible below it.
+    suspend fun showLine(i: Int) {
         val vp = listState.layoutInfo.viewportSize.height
-        if (active < 0) listState.animateScrollToItem(0)
-        else listState.animateScrollToItem(active, -(vp / 3)) // keep active line ~1/3 from the top
+        listState.animateScrollToItem(i.coerceIn(0, lines.lastIndex), -(vp * 0.60f - padPx).toInt())
+    }
+
+    LaunchedEffect(lines, active, browsing) {
+        if (!browsing) showLine(if (active < 0) 0 else active)
+    }
+    LaunchedEffect(cursor, browsing) {
+        if (browsing) showLine(cursor)
     }
 
     LazyColumn(
         state = listState,
-        modifier = modifier,
+        modifier = modifier
+            .onPreviewKeyEvent { ev ->
+                val up = ev.key == Key.DirectionUp
+                val down = ev.key == Key.DirectionDown
+                val select = ev.key == Key.DirectionCenter || ev.key == Key.Enter || ev.key == Key.NumPadEnter
+                when {
+                    (up || down) && ev.type == KeyEventType.KeyDown -> {
+                        if (!browsing) { cursor = active.coerceAtLeast(0); browsing = true }
+                        else cursor = (cursor + if (down) 1 else -1).coerceIn(0, lines.lastIndex)
+                        keyTick++
+                        true
+                    }
+                    (up || down) -> true
+                    select && browsing && ev.type == KeyEventType.KeyDown -> {
+                        if (ev.nativeKeyEvent.repeatCount == 0) {
+                            onSeek(lines[cursor].timeMs)
+                            browsing = false
+                        }
+                        true
+                    }
+                    select && browsing -> true
+                    ev.key == Key.DirectionLeft && browsing -> { browsing = false; false }
+                    else -> false
+                }
+            }
+            .onFocusChanged { focused = it.isFocused; if (!it.isFocused) browsing = false }
+            .focusRing(focused, RoundedCornerShape(12.dp), 2.dp)
+            .focusable(),
         contentPadding = PaddingValues(vertical = 220.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         itemsIndexed(lines) { i, line ->
+            val isCursor = browsing && i == cursor
+            val on = i == active || isCursor
             Text(
                 line.text,
-                modifier = Modifier.breathe(if (i == active) Color(0xFFF0F0F0) else LyricDim),
+                modifier = Modifier
+                    .then(if (isCursor) Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(10.dp)) else Modifier)
+                    .padding(horizontal = 8.dp)
+                    .breathe(if (on) Color(0xFFF0F0F0) else LyricDim),
                 fontSize = 28.sp,
-                fontWeight = if (i == active) FontWeight.Bold else FontWeight.Normal,
-                color = if (i == active) Color(0xFFF0F0F0) else LyricDim,
+                fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                color = if (on) Color(0xFFF0F0F0) else LyricDim,
             )
         }
     }
