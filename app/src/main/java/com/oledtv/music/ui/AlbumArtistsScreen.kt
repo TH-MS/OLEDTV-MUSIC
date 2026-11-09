@@ -2,6 +2,7 @@
 
 package com.oledtv.music.ui
 
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -10,6 +11,11 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.runtime.State
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawOutline
@@ -91,6 +97,75 @@ sealed interface Load<out T> {
 }
 
 /** Every interactive element in the app uses this: visible white border + scale on focus (no costly glow). */
+/** Light-grey floor for the "breathing" UI colours on Now Playing (white pulses down to ~#A0A0A0). */
+private const val BREATH_FLOOR = 0.627f      // 0xA0 / 0xFF
+private const val READABLE_MIN = 0.4f        // 0x66: dim elements never go below this
+
+/** The single shared clock: 0 = brightest, 1 = dimmest. Every UI element reads this same value. */
+val LocalBreath = compositionLocalOf<State<Float>?> { null }
+/** 1 = focus rings visible, 0 = faded away after 30 s without input (Now Playing only). */
+val LocalRingFade = compositionLocalOf<State<Float>?> { null }
+
+internal val UiWhite = Color(0xFFE6E6E6)
+
+/**
+ * One slow sine-like ease in/out loop (9 s each way, ~18 s per full cycle). The curve flattens at both ends, so the
+ * colour lingers at the brightest and dimmest points and never changes in a mechanical, noticeable way.
+ */
+@Composable
+fun rememberBreath(): State<Float> {
+    val t = rememberInfiniteTransition(label = "breath")
+    return t.animateFloat(
+        0f, 1f,
+        infiniteRepeatable(tween(9_000, easing = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)), RepeatMode.Reverse),
+        label = "breath",
+    )
+}
+
+/**
+ * Lowest alpha an element of colour [base] may reach. Pure/near white goes down by the full 37% (#FFFFFF -> #A0A0A0,
+ * #E6E6E6 -> #909090). Dimmer elements move less so they stay readable (nothing is ever pushed below #666666,
+ * and anything already darker than that does not move at all). No element is ever made brighter than it is today.
+ * Because the UI sits on pure black, alpha x colour is exactly the same as scaling the colour itself, and since
+ * every element uses the same clock, relationships never invert (e.g. the played part of the progress bar is
+ * always at least as bright as the remaining part).
+ */
+private fun minAlphaFor(base: Color): Float {
+    val v = base.red
+    if (v <= 0f) return 1f
+    val floor = maxOf(v * BREATH_FLOOR, minOf(v, READABLE_MIN))
+    return floor / v
+}
+
+/** Makes this element breathe with the shared clock (draw phase only - no recomposition per frame). */
+@Composable
+fun Modifier.breathe(base: Color): Modifier {
+    val breath = LocalBreath.current ?: return this
+    val minA = remember(base) { minAlphaFor(base) }
+    if (minA >= 0.999f) return this
+    return this.graphicsLayer {
+        alpha = 1f - breath.value * (1f - minA)
+        compositingStrategy = CompositingStrategy.ModulateAlpha
+    }
+}
+
+/** Focus ring drawn in the draw phase: breathes with the shared clock and fades out when the ring-fade is active. */
+@Composable
+fun Modifier.focusRing(visible: Boolean, shape: Shape, width: Dp = 3.dp, base: Color = UiWhite): Modifier {
+    if (!visible) return this
+    val breath = LocalBreath.current
+    val fade = LocalRingFade.current
+    val minA = remember(base) { minAlphaFor(base) }
+    return this.drawWithContent {
+        drawContent()
+        val a = (1f - (breath?.value ?: 0f) * (1f - minA)) * (fade?.value ?: 1f)
+        if (a > 0.01f) {
+            drawOutline(shape.createOutline(size, layoutDirection, this), base, alpha = a, style = Stroke(width.toPx()))
+        }
+    }
+}
+
+/** Every interactive element in the app uses this: visible ring + scale on focus (no costly glow). */
 @Composable
 fun FocusSurface(
     onClick: () -> Unit,
@@ -102,27 +177,27 @@ fun FocusSurface(
     playing: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    var focused by remember { mutableStateOf(false) }
     Surface(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier.onFocusChanged { focused = it.hasFocus },
         shape = ClickableSurfaceDefaults.shape(shape = shape, focusedShape = shape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = containerColor,
-            contentColor = Color(0xFFE6E6E6),
+            contentColor = UiWhite,
             focusedContainerColor = focusedContainerColor,
-            focusedContentColor = Color(0xFFE6E6E6),
+            focusedContentColor = UiWhite,
             pressedContainerColor = focusedContainerColor,
-            pressedContentColor = Color(0xFFE6E6E6),
+            pressedContentColor = UiWhite,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = if (showFocus) 1.08f else 1f),
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = if (showFocus && !playing) Border(BorderStroke(3.dp, Color(0xFFE6E6E6)), shape = shape) else Border.None,
-        ),
+        border = ClickableSurfaceDefaults.border(focusedBorder = Border.None),
     ) {
         // Explicit content colour so text never inherits an unexpected (invisible) colour.
-        CompositionLocalProvider(LocalContentColor provides Color(0xFFE6E6E6)) { content() }
+        CompositionLocalProvider(LocalContentColor provides UiWhite) { content() }
         // Currently playing artist / album / track: a pulsating colour travels around the edge.
         if (playing) Box(Modifier.matchParentSize().nowPlayingBorder(shape))
+        else if (focused && showFocus) Box(Modifier.matchParentSize().focusRing(true, shape, 3.dp))
     }
 }
 
@@ -258,7 +333,10 @@ private fun ArtistGrid(
     topFocus: FocusRequester,
 ) {
     if (artists.isEmpty()) { StatusPane("No album artists found on this server."); return }
-    val startIndex = remember { lastIndex.intValue.coerceIn(0, artists.lastIndex) }
+    val playingIdx = artists.indexOfFirst { it.id == playingArtistId }
+    // Coming back while music plays: start on the playing artist (its row centred when possible);
+    // otherwise start where you left off.
+    val startIndex = remember { if (playingIdx >= 0) playingIdx else lastIndex.intValue.coerceIn(0, artists.lastIndex) }
     // One requester per tile so we can focus any tile (the first shown, or the very last one).
     val requesters = remember(artists) { List(artists.size) { FocusRequester() } }
     val startFocus = requesters[startIndex]
@@ -337,6 +415,17 @@ private fun ArtistGrid(
 
     LaunchedEffect(artists) {
         gridState.scrollToItem(startIndex)
+        if (playingIdx >= 0) {
+            // Centre the playing artist's row vertically. Near the top/bottom of the list the scroll simply
+            // stops at the edge, so it is centred only where that is actually possible.
+            delay(60)
+            val info = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == startIndex }
+            if (info != null) {
+                val viewport = gridState.layoutInfo.viewportSize.height
+                val desiredTop = (viewport - info.size.height) / 2
+                gridState.scrollBy((info.offset.y - desiredTop).toFloat())
+            }
+        }
         delay(80)
         startFocus.requestSafely()
     }

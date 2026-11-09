@@ -12,6 +12,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -372,10 +374,29 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
         }
     }
 
+    // Focus rings fade away after 30 s without any key press; the selection itself stays where it is,
+    // so the next key press carries on navigating as normal (and the rings come straight back).
+    val breath = rememberBreath()
+    var ringActive by remember { mutableStateOf(true) }
+    val lastKeyAt = remember { longArrayOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1_000)
+            if (System.currentTimeMillis() - lastKeyAt[0] > 30_000) ringActive = false
+        }
+    }
+    val ringFade = animateFloatAsState(
+        if (ringActive) 1f else 0f,
+        tween(if (ringActive) 250 else 2_500, easing = LinearEasing),
+        label = "ringFade",
+    )
+
     // Holding SELECT on any element for 2.5 s hides the whole UI (hold again, press a direction or Back to restore).
     val scope = rememberCoroutineScope()
     val hold = remember { object { var job: Job? = null; var fired = false } }
     val onRootKey: (KeyEvent) -> Boolean = { ev ->
+        lastKeyAt[0] = System.currentTimeMillis()
+        ringActive = true
         val isSelect = ev.key == Key.DirectionCenter || ev.key == Key.Enter || ev.key == Key.NumPadEnter
         val isDirection = ev.key == Key.DirectionUp || ev.key == Key.DirectionDown ||
             ev.key == Key.DirectionLeft || ev.key == Key.DirectionRight
@@ -413,6 +434,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     }
 
     // The whole player shifts 2-5 px on track change and every 60 s (cover included, even when the UI is hidden).
+    CompositionLocalProvider(LocalBreath provides breath, LocalRingFade provides ringFade) {
     PixelShiftBox(shiftKey = mediaId, modifier = Modifier.fillMaxSize().background(Color.Black).onPreviewKeyEvent(onRootKey)) {
         Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 24.dp)) {
             // ── Left ~45%
@@ -441,9 +463,9 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                 // drift area (and nothing is drawn: true OLED black).
                 Column(Modifier.fillMaxWidth().graphicsLayer { alpha = if (uiVisible) 1f else 0f }) {
                     Spacer(Modifier.height(12.dp))
-                    Text(title, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(artist, fontSize = 20.sp, color = Color(0xFFCCCCCC), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(album, fontSize = 16.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(title, Modifier.breathe(OffWhite), fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(artist, Modifier.breathe(Color(0xFFCCCCCC)), fontSize = 20.sp, color = Color(0xFFCCCCCC), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(album, Modifier.breathe(Color(0xFF888888)), fontSize = 16.sp, color = Color(0xFF888888), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(12.dp))
                     ProgressRow(
                         position = position,
@@ -474,6 +496,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                 )
             }
         }
+    }
     }
 }
 
@@ -528,7 +551,7 @@ private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, active: B
         focusedContainerColor = Color(0xFF161616),
     ) {
         Box(Modifier.padding(horizontal = 30.dp, vertical = 6.dp)) {
-            GlyphIcon(glyph, Modifier.size(18.dp), tint = if (active) OffWhite else Color(0xFF7A7A7A))
+            GlyphIcon(glyph, Modifier.size(18.dp).breathe(if (active) OffWhite else Color(0xFF7A7A7A)), tint = if (active) OffWhite else Color(0xFF7A7A7A))
         }
     }
 }
@@ -580,7 +603,7 @@ private fun DriftingCover(modifier: Modifier, speedFactor: Float, label: String?
         // Speed label: fixed, horizontally centred, above the highest point the cover ever reaches.
         // Drawn after the cover so nothing can ever sit on top of it.
         Box(Modifier.align(Alignment.TopCenter).height(labelH).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            if (label != null) Text(label, fontSize = 16.sp, color = OffWhite)
+            if (label != null) Text(label, Modifier.breathe(OffWhite), fontSize = 16.sp, color = OffWhite)
         }
     }
 }
@@ -642,23 +665,23 @@ private fun ProgressRow(
                     else -> false
                 }
             }
-            .border(2.dp, if (focused) OffWhite else Color.Transparent, RoundedCornerShape(10.dp))
+            .focusRing(focused, RoundedCornerShape(10.dp), 2.dp)
             .focusable()
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Box(Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.CenterStart) {
             Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))
-            Box(Modifier.fillMaxWidth(frac).height(barHeight).background(OffWhite, RoundedCornerShape(4.dp)))
+            Box(Modifier.fillMaxWidth(frac).height(barHeight).breathe(OffWhite).background(OffWhite, RoundedCornerShape(4.dp)))
             if (focused) {
                 Box(Modifier.fillMaxWidth(frac), contentAlignment = Alignment.CenterEnd) {
-                    Box(Modifier.size(16.dp).background(OffWhite, CircleShape))
+                    Box(Modifier.size(16.dp).breathe(OffWhite).background(OffWhite, CircleShape))
                 }
             }
         }
         Box(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-            Text(formatMs(pos), Modifier.align(Alignment.CenterStart), fontSize = 14.sp, color = Color(0xFFAAAAAA))
-            Text(trackLabel, Modifier.align(Alignment.Center), fontSize = 14.sp, color = Color(0xFFAAAAAA))
-            Text(formatMs(dur), Modifier.align(Alignment.CenterEnd), fontSize = 14.sp, color = Color(0xFFAAAAAA))
+            Text(formatMs(pos), Modifier.align(Alignment.CenterStart).breathe(Color(0xFFAAAAAA)), fontSize = 14.sp, color = Color(0xFFAAAAAA))
+            Text(trackLabel, Modifier.align(Alignment.Center).breathe(Color(0xFFAAAAAA)), fontSize = 14.sp, color = Color(0xFFAAAAAA))
+            Text(formatMs(dur), Modifier.align(Alignment.CenterEnd).breathe(Color(0xFFAAAAAA)), fontSize = 14.sp, color = Color(0xFFAAAAAA))
         }
     }
 }
@@ -682,7 +705,7 @@ private fun LyricsPane(
 
 @Composable
 private fun CenterNote(text: String, modifier: Modifier) {
-    Box(modifier, contentAlignment = Alignment.Center) { Text(text, fontSize = 20.sp, color = LyricDim) }
+    Box(modifier, contentAlignment = Alignment.Center) { Text(text, Modifier.breathe(LyricDim), fontSize = 20.sp, color = LyricDim) }
 }
 
 /** Selectable "No lyrics available" box: click to hide the message (OLED), click again to bring it back. */
@@ -698,7 +721,7 @@ private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifie
     Box(modifier, contentAlignment = Alignment.Center) {
         FocusSurface(
             onClick = onToggle,
-            modifier = Modifier.graphicsLayer { alpha = fade.value },
+            modifier = Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim),
             containerColor = Color.Transparent,
             focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
             showFocus = !hidden,
@@ -744,6 +767,7 @@ private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, modifier
         itemsIndexed(lines) { i, line ->
             Text(
                 line.text,
+                modifier = Modifier.breathe(if (i == active) Color(0xFFF0F0F0) else LyricDim),
                 fontSize = 28.sp,
                 fontWeight = if (i == active) FontWeight.Bold else FontWeight.Normal,
                 color = if (i == active) Color(0xFFF0F0F0) else LyricDim,
@@ -789,13 +813,13 @@ private fun PlainLyrics(text: String, position: State<Long>, duration: State<Lon
                 true
             }
             .onFocusChanged { focused = it.isFocused }
-            .border(2.dp, if (focused) Color.White else Color.Transparent, RoundedCornerShape(12.dp))
+            .focusRing(focused, RoundedCornerShape(12.dp), 2.dp)
             .focusable(),
         contentPadding = PaddingValues(vertical = 40.dp, horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         itemsIndexed(lines) { _, line ->
-            Text(line.ifBlank { " " }, fontSize = 24.sp, color = Color(0xFFDDDDDD))
+            Text(line.ifBlank { " " }, Modifier.breathe(Color(0xFFDDDDDD)), fontSize = 24.sp, color = Color(0xFFDDDDDD))
         }
     }
 }

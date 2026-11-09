@@ -4,6 +4,13 @@ package com.oledtv.music
 
 import android.app.Activity
 import android.content.Context
+import android.os.SystemClock
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import android.view.WindowManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -118,6 +125,23 @@ class MainActivity : ComponentActivity() {
         val prefs = Prefs(this)
         setContent { OledApp(prefs) }
     }
+
+    private var swallowUp = false
+
+    /** Stamps every key press for the idle timer; while the bouncing title is up, any key just dismisses it. */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        Idle.lastInputMs = SystemClock.elapsedRealtime()
+        if (Idle.screensaver && event.action == android.view.KeyEvent.ACTION_DOWN) {
+            Idle.screensaver = false
+            swallowUp = true
+            return true
+        }
+        if (swallowUp) {
+            if (event.action == android.view.KeyEvent.ACTION_UP) swallowUp = false
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
 }
 
 // ───────────────────────── Navigation ─────────────────────────
@@ -148,7 +172,7 @@ fun OledApp(prefs: Prefs) {
         var lastPlaying = System.currentTimeMillis()
         while (true) {
             if (manager.player.isPlaying) lastPlaying = System.currentTimeMillis()
-            val keepOn = System.currentTimeMillis() - lastPlaying < 30_000
+            val keepOn = System.currentTimeMillis() - lastPlaying < 30_000 || Idle.screensaver
             activity?.window?.let { w ->
                 if (keepOn) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 else w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -180,6 +204,19 @@ fun OledApp(prefs: Prefs) {
         val below = stack.getOrNull(stack.lastIndex - 1)
         if (below is Screen.Tracks && below.index == manager.currentAlbumIndex()) stack.removeAt(stack.lastIndex)
         else nowPlayingStack(false)
+    }
+
+    // 60 s without any key press on any screen except Now Playing:
+    //  - something is playing/paused  -> go back to Now Playing
+    //  - nothing playing              -> show the bouncing "OLED MUSIC PLAYER" title
+    androidx.compose.runtime.LaunchedEffect(manager) {
+        while (true) {
+            delay(1_000)
+            val idleMs = SystemClock.elapsedRealtime() - Idle.lastInputMs
+            if (idleMs >= 60_000 && !Idle.screensaver && stack.last() !is Screen.Player) {
+                if (manager.nowSongId != null) nowPlayingStack(true) else Idle.screensaver = true
+            }
+        }
     }
 
     CompositionLocalProvider(LocalContentColor provides Color(0xFFE6E6E6)) {
@@ -224,7 +261,60 @@ fun OledApp(prefs: Prefs) {
                 is Screen.Player -> PlayerScreen(repo, manager)
                 is Screen.Config -> Unit
             }
+            if (Idle.screensaver) BouncingTitle()
         }
+    }
+}
+
+/** App-wide idle bookkeeping. [lastInputMs] is stamped on every remote key press. */
+object Idle {
+    @Volatile var lastInputMs: Long = SystemClock.elapsedRealtime()
+    var screensaver by mutableStateOf(false)
+}
+
+/**
+ * Shown after 60 s idle when nothing is playing: the title bounces around the whole screen like an old DVD
+ * menu, at the same speed and the same smooth per-frame motion as the "Fast" cover drift (4 dp/s x, 3 dp/s y).
+ */
+@Composable
+fun BouncingTitle() {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black)) {
+        val density = LocalDensity.current.density
+        val maxW = constraints.maxWidth.toFloat()
+        val maxH = constraints.maxHeight.toFloat()
+        var w by remember { mutableFloatStateOf(0f) }
+        var h by remember { mutableFloatStateOf(0f) }
+        val px = remember { mutableFloatStateOf(maxW * 0.3f) }
+        val py = remember { mutableFloatStateOf(maxH * 0.3f) }
+
+        androidx.compose.runtime.LaunchedEffect(maxW, maxH, w, h) {
+            val slackX = (maxW - w).coerceAtLeast(0f)
+            val slackY = (maxH - h).coerceAtLeast(0f)
+            var dirX = 1f
+            var dirY = 1f
+            var last = withFrameNanos { it }
+            while (true) {
+                val now = withFrameNanos { it }
+                val dt = ((now - last) / 1_000_000_000f).coerceAtMost(0.1f)
+                last = now
+                var x = px.floatValue + dirX * 4f * density * dt
+                var y = py.floatValue + dirY * 3f * density * dt
+                if (x > slackX) { x = slackX - (x - slackX); dirX = -1f } else if (x < 0f) { x = -x; dirX = 1f }
+                if (y > slackY) { y = slackY - (y - slackY); dirY = -1f } else if (y < 0f) { y = -y; dirY = 1f }
+                px.floatValue = x.coerceIn(0f, slackX)
+                py.floatValue = y.coerceIn(0f, slackY)
+            }
+        }
+
+        Text(
+            "OLED MUSIC PLAYER",
+            Modifier
+                .onSizeChanged { w = it.width.toFloat(); h = it.height.toFloat() }
+                .graphicsLayer { translationX = px.floatValue; translationY = py.floatValue },
+            color = Color(0xFFA0A0A0),
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
