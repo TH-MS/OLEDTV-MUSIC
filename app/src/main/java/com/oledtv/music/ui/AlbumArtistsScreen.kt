@@ -188,14 +188,23 @@ fun FocusSurface(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = containerColor,
             contentColor = UiWhite,
-            focusedContainerColor = focusedContainerColor,
+            focusedContainerColor = containerColor, // the focus fill is drawn below so it can fade with the ring
             focusedContentColor = UiWhite,
-            pressedContainerColor = focusedContainerColor,
+            pressedContainerColor = containerColor,
             pressedContentColor = UiWhite,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = if (showFocus) 1.08f else 1f),
         border = ClickableSurfaceDefaults.border(focusedBorder = Border.None),
     ) {
+        // Focus fill (the lighter pill): drawn in the draw phase so it fades out together with the ring.
+        if (focused && focusedContainerColor != containerColor) {
+            val fade = LocalRingFade.current
+            Box(Modifier.matchParentSize().drawWithContent {
+                val a = fade?.value ?: 1f
+                if (a > 0.01f) drawOutline(shape.createOutline(size, layoutDirection, this), focusedContainerColor, alpha = a)
+                drawContent()
+            })
+        }
         // Explicit content colour so text never inherits an unexpected (invisible) colour.
         CompositionLocalProvider(LocalContentColor provides UiWhite) { content() }
         // Currently playing artist / album / track: a pulsating colour travels around the edge.

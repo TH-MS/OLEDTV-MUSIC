@@ -382,7 +382,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     LaunchedEffect(Unit) {
         while (true) {
             delay(1_000)
-            if (System.currentTimeMillis() - lastKeyAt[0] > 30_000) ringActive = false
+            if (System.currentTimeMillis() - lastKeyAt[0] > 20_000) ringActive = false
         }
     }
     val ringFade = animateFloatAsState(
@@ -548,7 +548,7 @@ private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, active: B
     FocusSurface(
         onClick, modifier,
         containerColor = Color.Black,
-        focusedContainerColor = Color.Black, // no tinted pill behind the focused icon: only the icon + ring
+        focusedContainerColor = Color(0xFF161616), // lighter pill; fades out with the ring after inactivity
     ) {
         Box(Modifier.padding(horizontal = 30.dp, vertical = 6.dp)) {
             GlyphIcon(glyph, Modifier.size(18.dp).breathe(if (active) OffWhite else Color(0xFF7A7A7A)), tint = if (active) OffWhite else Color(0xFF7A7A7A))
@@ -723,7 +723,7 @@ private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifie
             onClick = onToggle,
             modifier = Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim),
             containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
+            focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
             showFocus = !hidden,
         ) {
             Text(
