@@ -199,6 +199,8 @@ private fun TrackList(
     if (songs.isEmpty()) { StatusPane("This album has no tracks."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, songs.lastIndex) }
     val startFocus = remember { FocusRequester() }
+    // Disc labels appear only if the album really has 2+ discs (a lone "Disc 1" is never shown).
+    val multiDisc = remember(songs) { songs.map { it.discNumber ?: 1 }.distinct().size > 1 }
 
     LazyColumn(
         state = listState,
@@ -208,6 +210,16 @@ private fun TrackList(
         modifier = Modifier.fillMaxSize(),
     ) {
         itemsIndexed(songs, key = { _, s -> s.id }) { i, song ->
+            val disc = song.discNumber ?: 1
+            val firstOfDisc = multiDisc && (i == 0 || disc != (songs[i - 1].discNumber ?: 1))
+            Column {
+            if (firstOfDisc) {
+                Text(
+                    "Disc $disc",
+                    Modifier.padding(start = 20.dp, top = if (i == 0) 0.dp else 14.dp, bottom = 6.dp),
+                    fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color(0xFF9A9A9A),
+                )
+            }
             FocusSurface(
                 onClick = { onPlay(songs, i) },
                 playing = song.id == playingSongId,
@@ -221,6 +233,7 @@ private fun TrackList(
                     Text(song.title, Modifier.weight(1f), fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(formatMs((song.duration ?: 0) * 1000L), fontSize = 18.sp, color = Color(0xFF8A8A8A))
                 }
+            }
             }
         }
     }

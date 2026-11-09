@@ -43,6 +43,7 @@ import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,6 +51,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
@@ -71,7 +78,9 @@ import coil.size.Precision
 import com.oledtv.music.data.ArtistDto
 import com.oledtv.music.data.NavidromeRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ───────────────────────── Shared UI building blocks ─────────────────────────
 
@@ -210,6 +219,8 @@ fun AlbumArtistsScreen(
 ) {
     var state by remember { mutableStateOf<Load<List<ArtistDto>>>(Load.Loading) }
     var reload by remember { mutableIntStateOf(0) }
+    // Target of "hold Up": the Now Playing button (or Settings when nothing has been played yet).
+    val topFocus = remember { FocusRequester() }
 
     LaunchedEffect(repo, reload) {
         state = Load.Loading
@@ -220,17 +231,17 @@ fun AlbumArtistsScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("OLED MUSIC PLAYER", Modifier.weight(1f), fontSize = 32.sp, fontWeight = FontWeight.Bold)
             if (onNowPlaying != null) {
-                FocusSurface(onNowPlaying) { Text("Now Playing", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
+                FocusSurface(onNowPlaying, Modifier.focusRequester(topFocus)) { Text("Now Playing", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
                 Spacer(Modifier.width(16.dp))
             }
-            FocusSurface(onSettings) { Text("Settings", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
+            FocusSurface(onSettings, if (onNowPlaying == null) Modifier.focusRequester(topFocus) else Modifier) { Text("Settings", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
         }
         Spacer(Modifier.padding(8.dp))
 
         when (val s = state) {
             is Load.Loading -> StatusPane("Loading artists…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId)
+            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId, topFocus)
         }
     }
 }
@@ -244,10 +255,51 @@ private fun ArtistGrid(
     onClick: (ArtistDto) -> Unit,
     columns: Int,
     playingArtistId: String?,
+    topFocus: FocusRequester,
 ) {
     if (artists.isEmpty()) { StatusPane("No album artists found on this server."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, artists.lastIndex) }
-    val startFocus = remember { FocusRequester() }
+    // One requester per tile so we can focus any tile (the first shown, or the very last one).
+    val requesters = remember(artists) { List(artists.size) { FocusRequester() } }
+    val startFocus = requesters[startIndex]
+    val scope = rememberCoroutineScope()
+    val hold = remember { object { var job: Job? = null; var fired = false } }
+
+    // Hold UP for 2 s -> jump to the top with the Now Playing button highlighted (not pressed).
+    // Hold DOWN for 2 s -> jump to the last artist. Releasing after a jump is swallowed.
+    val onKey: (KeyEvent) -> Boolean = { ev ->
+        val up = ev.key == Key.DirectionUp
+        val down = ev.key == Key.DirectionDown
+        if (!up && !down) false
+        else when (ev.type) {
+            KeyEventType.KeyDown -> {
+                if (hold.fired) true
+                else {
+                    if (ev.nativeKeyEvent.repeatCount == 0 && hold.job == null) {
+                        hold.job = scope.launch {
+                            delay(2_000)
+                            hold.fired = true
+                            if (up) {
+                                gridState.scrollToItem(0)
+                                delay(80)
+                                topFocus.requestSafely()
+                            } else {
+                                gridState.scrollToItem(artists.lastIndex)
+                                delay(80)
+                                requesters.last().requestSafely()
+                            }
+                        }
+                    }
+                    false
+                }
+            }
+            KeyEventType.KeyUp -> {
+                hold.job?.cancel(); hold.job = null
+                if (hold.fired) { hold.fired = false; true } else false
+            }
+            else -> false
+        }
+    }
 
     LazyVerticalGrid(
         columns = if (columns > 0) GridCells.Fixed(columns) else GridCells.Adaptive(170.dp),
@@ -255,7 +307,7 @@ private fun ArtistGrid(
         contentPadding = PaddingValues(12.dp),
         horizontalArrangement = Arrangement.spacedBy(22.dp),
         verticalArrangement = Arrangement.spacedBy(22.dp),
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().onPreviewKeyEvent(onKey),
     ) {
         itemsIndexed(artists, key = { _, a -> a.id }) { i, artist ->
             FocusSurface(
@@ -263,7 +315,7 @@ private fun ArtistGrid(
                 playing = artist.id == playingArtistId,
                 modifier = Modifier
                     .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i }
-                    .then(if (i == startIndex) Modifier.focusRequester(startFocus) else Modifier),
+                    .focusRequester(requesters[i]),
             ) {
                 Column {
                     CoverImage(
