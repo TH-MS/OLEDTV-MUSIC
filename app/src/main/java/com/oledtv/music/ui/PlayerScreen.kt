@@ -543,10 +543,12 @@ private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, active: B
 private fun DriftingCover(modifier: Modifier, speedFactor: Float, label: String?, content: @Composable (Dp) -> Unit) {
     BoxWithConstraints(modifier) {
         val labelH = 24.dp
-        val cover = minOf(maxWidth, maxHeight - labelH) * 0.9f
+        // Room above the cover for the label PLUS the ~8% focus enlargement (it grows about 4% upward).
+        val topReserve = labelH + 24.dp
+        val cover = minOf(maxWidth, maxHeight - topReserve) * 0.9f
         val density = LocalDensity.current.density
         val slackX = ((maxWidth - cover).value * density).coerceAtLeast(0f)
-        val slackY = ((maxHeight - cover - labelH).value * density).coerceAtLeast(0f)
+        val slackY = ((maxHeight - cover - topReserve).value * density).coerceAtLeast(0f)
         val px = remember { mutableFloatStateOf(0f) }
         val py = remember { mutableFloatStateOf(0f) }
         val factor = rememberUpdatedState(speedFactor)
@@ -569,16 +571,17 @@ private fun DriftingCover(modifier: Modifier, speedFactor: Float, label: String?
             }
         }
 
-        // Speed label: fixed, horizontally centred, above the highest point the cover ever reaches.
-        Box(Modifier.align(Alignment.TopCenter).height(labelH).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            if (label != null) Text(label, fontSize = 16.sp, color = OffWhite)
-        }
         Box(
             Modifier
-                .padding(top = labelH)
+                .padding(top = topReserve)
                 .graphicsLayer { translationX = px.floatValue; translationY = py.floatValue }
                 .size(cover),
         ) { content(cover) }
+        // Speed label: fixed, horizontally centred, above the highest point the cover ever reaches.
+        // Drawn after the cover so nothing can ever sit on top of it.
+        Box(Modifier.align(Alignment.TopCenter).height(labelH).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            if (label != null) Text(label, fontSize = 16.sp, color = OffWhite)
+        }
     }
 }
 
