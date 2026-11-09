@@ -191,6 +191,14 @@ class PlaybackManager private constructor(context: Context) {
 
     val hasQueue: Boolean get() = player.mediaItemCount > 0
 
+    /** Remote Play/Pause key (works on every screen). Does nothing when no song has been selected. */
+    fun togglePlayPause(): Boolean {
+        if (!hasQueue) return false
+        if (player.playbackState == Player.STATE_ENDED) { player.seekTo(0, 0L); player.play() }
+        else if (player.playWhenReady) player.pause() else player.play()
+        return true
+    }
+
     /** True while the remaining tracks of the current album are shuffled (UI highlights the button). */
     var shuffled by mutableStateOf(false)
 
@@ -198,6 +206,8 @@ class PlaybackManager private constructor(context: Context) {
     var nowSongId by mutableStateOf<String?>(null)
     var nowAlbumId by mutableStateOf<String?>(null)
     var nowArtistId by mutableStateOf<String?>(null)
+    /** "Artist / Song" for the small ticker on the browse screens (null when nothing is queued). */
+    var nowLine by mutableStateOf<String?>(null)
 
     /** 0 = Fast, 1 = Medium, 2 = Slow: speed of the drifting cover (default Slow). */
     var driftSpeed by mutableStateOf(2)
@@ -208,6 +218,11 @@ class PlaybackManager private constructor(context: Context) {
         nowSongId = if (active) item?.mediaId else null
         nowAlbumId = if (active) albums.getOrNull(currentAlbumIndex())?.id else null
         nowArtistId = if (active) artist?.id else null
+        nowLine = if (active) {
+            val md = item?.mediaMetadata
+            listOfNotNull(md?.artist?.toString()?.takeIf { it.isNotBlank() }, md?.title?.toString()?.takeIf { it.isNotBlank() })
+                .joinToString(" / ").ifBlank { null }
+        } else null
     }
 
     /** Album Artist whose albums are queued (used to rebuild navigation for "Now Playing"). */

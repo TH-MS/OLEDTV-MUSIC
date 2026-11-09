@@ -2,6 +2,11 @@
 
 package com.oledtv.music.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -319,6 +324,8 @@ fun AlbumArtistsScreen(
     playingArtistId: String?,
     focusArtistId: String?,
     onFocusArtist: (String) -> Unit,
+    centre: Boolean,
+    onCentred: () -> Unit,
     onArtistClick: (ArtistDto) -> Unit,
     onSettings: () -> Unit,
     onNowPlaying: (() -> Unit)?,
@@ -347,7 +354,7 @@ fun AlbumArtistsScreen(
         when (val s = state) {
             is Load.Loading -> LoadingPane("Loading artists…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId, topFocus, focusArtistId, onFocusArtist)
+            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId, topFocus, focusArtistId, onFocusArtist, centre, onCentred)
         }
     }
 }
@@ -364,6 +371,8 @@ private fun ArtistGrid(
     topFocus: FocusRequester,
     focusArtistId: String?,
     onFocusArtist: (String) -> Unit,
+    centre: Boolean,
+    onCentred: () -> Unit,
 ) {
     if (artists.isEmpty()) { StatusPane("No album artists found on this server."); return }
     // Returning to this screen: land on the artist you last picked/focused (or the playing artist when you
@@ -410,8 +419,11 @@ private fun ArtistGrid(
     }
 
     LaunchedEffect(artists) {
-        gridState.scrollToItem(startIndex)   // remeasures synchronously, so layout info is valid right after
-        if (focusIdx >= 0) {
+        // A normal return keeps the grid exactly where it was (no re-scroll = no visible jump). Only when arriving
+        // via Now Playing (or if the target isn't on screen) do we scroll.
+        val visible = gridState.layoutInfo.visibleItemsInfo.any { it.index == startIndex }
+        if (centre || !visible) gridState.scrollToItem(startIndex)
+        if (centre && focusIdx >= 0) {
             // Centre that artist's row vertically. Near the top/bottom of the list the scroll simply stops at
             // the edge, so it is centred only where that is actually possible.
             fun find() = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == startIndex }
@@ -423,6 +435,7 @@ private fun ArtistGrid(
                 gridState.scrollBy((info.offset.y - desiredTop).toFloat())
             }
         }
+        onCentred()
         startFocus.requestWhenReady()
     }
 
@@ -433,5 +446,47 @@ private fun ArtistGrid(
             val a = artists.getOrNull(idx) ?: return@collectLatest
             try { repo.albumsOf(a.id) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
         }
+    }
+}
+
+
+/**
+ * Small "Artist / Song" line, centred at the top of the browse screens, inside a fixed-size box. If the text is
+ * longer than the box it waits 3 s, scrolls slowly to the end, pauses briefly and starts over (waiting 3 s again).
+ * It breathes white <-> grey with the same clock as the Now Playing screen.
+ */
+@Composable
+fun NowPlayingTicker(text: String, modifier: Modifier = Modifier) {
+    val boxW = 460.dp
+    val density = LocalDensity.current
+    var textW by remember(text) { mutableIntStateOf(0) }
+    val boxPx = with(density) { boxW.toPx() }
+    val offset = remember(text) { Animatable(0f) }
+    LaunchedEffect(text, textW) {
+        offset.snapTo(0f)
+        val overflow = textW - boxPx
+        if (overflow <= 1f) return@LaunchedEffect
+        while (true) {
+            delay(3_000)
+            val ms = (overflow / with(density) { 28.dp.toPx() } * 1000f).toInt().coerceAtLeast(300)
+            offset.animateTo(-overflow, tween(ms, easing = LinearEasing))
+            delay(1_200)
+            offset.snapTo(0f)
+        }
+    }
+    Box(modifier.width(boxW).clipToBounds(), contentAlignment = Alignment.CenterStart) {
+        val centred = textW > 0 && textW <= boxPx
+        Text(
+            text,
+            modifier = Modifier
+                .wrapContentWidth(align = Alignment.Start, unbounded = true)
+                .onSizeChanged { textW = it.width }
+                .graphicsLayer { translationX = if (centred) (boxPx - textW) / 2f else offset.value }
+                .breathe(UiWhite),
+            fontSize = 14.sp,
+            maxLines = 1,
+            softWrap = false,
+            color = UiWhite,
+        )
     }
 }

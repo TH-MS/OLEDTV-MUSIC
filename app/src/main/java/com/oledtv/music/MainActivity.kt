@@ -2,6 +2,9 @@
 
 package com.oledtv.music
 
+import com.oledtv.music.ui.rememberBreath
+import com.oledtv.music.ui.LocalBreath
+import com.oledtv.music.ui.NowPlayingTicker
 import android.app.Activity
 import android.content.Context
 import android.os.SystemClock
@@ -140,6 +143,11 @@ class MainActivity : ComponentActivity() {
             if (event.action == android.view.KeyEvent.ACTION_UP) swallowUp = false
             return true
         }
+        // Remote's Play/Pause button (not Select): toggles playback from any screen; ignored if nothing is queued.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) PlaybackManager.get(this).togglePlayPause()
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 }
@@ -151,6 +159,8 @@ sealed interface Screen {
     class Artists(val grid: LazyGridState = LazyGridState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen {
         /** Id of the artist last focused/picked (or the playing artist via Now Playing): where we land on return. */
         var focusId: String? = null
+        /** True only when arriving via Now Playing: centre the playing artist. A normal return keeps the scroll as-is. */
+        var centre: Boolean = false
     }
     class Artist(val artist: ArtistDto, val grid: LazyGridState = LazyGridState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen
     class Tracks(val albums: List<AlbumDto>, val index: Int, val list: LazyListState = LazyListState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen
@@ -190,7 +200,7 @@ fun OledApp(prefs: Prefs) {
         val albums = manager.queueAlbums
         val idx = manager.currentAlbumIndex()
         if (artist != null && idx in albums.indices) {
-            val base = (stack.firstOrNull { it is Screen.Artists } as? Screen.Artists ?: Screen.Artists()).also { it.focusId = artist.id }
+            val base = (stack.firstOrNull { it is Screen.Artists } as? Screen.Artists ?: Screen.Artists()).also { it.focusId = artist.id; it.centre = true }
             val artistScreen = stack.filterIsInstance<Screen.Artist>().lastOrNull { it.artist.id == artist.id } ?: Screen.Artist(artist)
             stack.clear()
             stack.add(base); stack.add(artistScreen); stack.add(Screen.Tracks(albums, idx))
@@ -238,17 +248,18 @@ fun OledApp(prefs: Prefs) {
                     stack.clear(); stack.add(Screen.Artists())
                 }
             } else when (screen) {
-                is Screen.Artists -> AlbumArtistsScreen(
+                is Screen.Artists -> Box(Modifier.fillMaxSize().padding(top = 26.dp)) { AlbumArtistsScreen(
                     repo = repo, gridState = screen.grid, lastIndex = screen.last, columns = artistColumns, playingArtistId = manager.nowArtistId,
                     focusArtistId = screen.focusId, onFocusArtist = { screen.focusId = it },
                     onArtistClick = { stack.add(Screen.Artist(it)) },
                     onSettings = { stack.add(Screen.Config) },
                     onNowPlaying = if (manager.hasQueue) ({ nowPlayingStack(true) }) else null,
-                )
-                is Screen.Artist -> ArtistDetailScreen(
+                    centre = screen.centre, onCentred = { screen.centre = false },
+                ) }
+                is Screen.Artist -> Box(Modifier.fillMaxSize().padding(top = 26.dp)) { ArtistDetailScreen(
                     repo = repo, artist = screen.artist, gridState = screen.grid, lastIndex = screen.last, columns = albumColumns, playingAlbumId = manager.nowAlbumId,
                     onAlbumClick = { albums, i -> stack.add(Screen.Tracks(albums, i)) },
-                )
+                ) }
                 is Screen.Tracks -> AlbumTracklistScreen(
                     repo = repo, albums = screen.albums, albumIndex = screen.index,
                     listState = screen.list, lastIndex = screen.last, playingSongId = manager.nowSongId,
@@ -264,6 +275,15 @@ fun OledApp(prefs: Prefs) {
                 )
                 is Screen.Player -> PlayerScreen(repo, manager)
                 is Screen.Config -> Unit
+            }
+            if (screen is Screen.Artists || screen is Screen.Artist) {
+                val line = manager.nowLine
+                if (line != null) {
+                    val breath = rememberBreath()
+                    CompositionLocalProvider(LocalBreath provides breath) {
+                        NowPlayingTicker(line, Modifier.align(Alignment.TopCenter).padding(top = 6.dp))
+                    }
+                }
             }
             if (Idle.screensaver) BouncingTitle()
         }
