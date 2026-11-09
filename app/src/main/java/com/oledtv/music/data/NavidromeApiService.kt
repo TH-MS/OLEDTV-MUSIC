@@ -181,6 +181,11 @@ class NavidromeRepository(val config: ServerConfig) {
     private val albumsCache = HashMap<String, List<AlbumDto>>()
     private val songsCache = HashMap<String, List<SongDto>>()
 
+    // Synchronous peeks: screens start with cached data already in hand (no "Loading" frame).
+    fun cachedArtists(): List<ArtistDto>? = artistsCache
+    fun cachedAlbums(artistId: String): List<AlbumDto>? = albumsCache[artistId]
+    fun cachedSongs(albumId: String): List<SongDto>? = songsCache[albumId]
+
     private fun <T : SubsonicBody> SubsonicResponse<T>.unwrap(): T {
         val body = response ?: throw IOException("Empty server response")
         if (body.status != "ok") throw IOException(body.error?.message ?: "Server error")

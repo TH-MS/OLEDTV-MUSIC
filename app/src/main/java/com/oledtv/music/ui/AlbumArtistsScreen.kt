@@ -13,6 +13,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
@@ -270,6 +273,23 @@ fun StatusPane(message: String, onRetry: (() -> Unit)? = null) {
     }
 }
 
+/** Waits for layout (one frame), then focuses - retrying briefly if the target is not attached yet. */
+suspend fun FocusRequester.requestWhenReady() {
+    withFrameNanos { }
+    repeat(8) {
+        try { requestFocus(); return } catch (e: IllegalStateException) { /* not attached yet */ }
+        delay(30)
+    }
+}
+
+/** "Loading…" is only shown if it takes noticeably long, so quick transitions never flash it. */
+@Composable
+fun LoadingPane(message: String) {
+    var show by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { delay(400); show = true }
+    if (show) StatusPane(message)
+}
+
 suspend fun FocusRequester.requestSafely() {
     try { requestFocus() } catch (e: IllegalStateException) { /* not attached yet */ } catch (e: CancellationException) { throw e }
 }
@@ -288,17 +308,19 @@ fun AlbumArtistsScreen(
     lastIndex: MutableIntState,
     columns: Int,
     playingArtistId: String?,
+    focusArtistId: String?,
+    onFocusArtist: (String) -> Unit,
     onArtistClick: (ArtistDto) -> Unit,
     onSettings: () -> Unit,
     onNowPlaying: (() -> Unit)?,
 ) {
-    var state by remember { mutableStateOf<Load<List<ArtistDto>>>(Load.Loading) }
+    var state by remember { mutableStateOf<Load<List<ArtistDto>>>(repo.cachedArtists()?.let { Load.Ok(it) } ?: Load.Loading) }
     var reload by remember { mutableIntStateOf(0) }
     // Target of "hold Up": the Now Playing button (or Settings when nothing has been played yet).
     val topFocus = remember { FocusRequester() }
 
     LaunchedEffect(repo, reload) {
-        state = Load.Loading
+        if (state is Load.Err) state = Load.Loading
         state = try { Load.Ok(repo.artists()) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(e.message ?: "Network error") }
     }
 
@@ -314,9 +336,9 @@ fun AlbumArtistsScreen(
         Spacer(Modifier.padding(8.dp))
 
         when (val s = state) {
-            is Load.Loading -> StatusPane("Loading artists…")
+            is Load.Loading -> LoadingPane("Loading artists…")
             is Load.Err -> StatusPane(s.message) { reload++ }
-            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId, topFocus)
+            is Load.Ok -> ArtistGrid(repo, s.value, gridState, lastIndex, onArtistClick, columns, playingArtistId, topFocus, focusArtistId, onFocusArtist)
         }
     }
 }
@@ -331,12 +353,14 @@ private fun ArtistGrid(
     columns: Int,
     playingArtistId: String?,
     topFocus: FocusRequester,
+    focusArtistId: String?,
+    onFocusArtist: (String) -> Unit,
 ) {
     if (artists.isEmpty()) { StatusPane("No album artists found on this server."); return }
-    val playingIdx = artists.indexOfFirst { it.id == playingArtistId }
-    // Coming back while music plays: start on the playing artist (its row centred when possible);
-    // otherwise start where you left off.
-    val startIndex = remember { if (playingIdx >= 0) playingIdx else lastIndex.intValue.coerceIn(0, artists.lastIndex) }
+    // Returning to this screen: land on the artist you last picked/focused (or the playing artist when you
+    // arrive via Now Playing), with its row centred where possible. First visit: the top.
+    val focusIdx = artists.indexOfFirst { it.id == focusArtistId }
+    val startIndex = remember { if (focusIdx >= 0) focusIdx else lastIndex.intValue.coerceIn(0, artists.lastIndex) }
     // One requester per tile so we can focus any tile (the first shown, or the very last one).
     val requesters = remember(artists) { List(artists.size) { FocusRequester() } }
     val startFocus = requesters[startIndex]
@@ -392,7 +416,7 @@ private fun ArtistGrid(
                 onClick = { onClick(artist) },
                 playing = artist.id == playingArtistId,
                 modifier = Modifier
-                    .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i }
+                    .onFocusChanged { if (it.hasFocus) { lastIndex.intValue = i; onFocusArtist(artist.id) } }
                     .focusRequester(requesters[i]),
             ) {
                 Column {
@@ -414,19 +438,28 @@ private fun ArtistGrid(
     }
 
     LaunchedEffect(artists) {
-        gridState.scrollToItem(startIndex)
-        if (playingIdx >= 0) {
-            // Centre the playing artist's row vertically. Near the top/bottom of the list the scroll simply
-            // stops at the edge, so it is centred only where that is actually possible.
-            delay(60)
-            val info = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == startIndex }
+        gridState.scrollToItem(startIndex)   // remeasures synchronously, so layout info is valid right after
+        if (focusIdx >= 0) {
+            // Centre that artist's row vertically. Near the top/bottom of the list the scroll simply stops at
+            // the edge, so it is centred only where that is actually possible.
+            fun find() = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == startIndex }
+            var info = find()
+            if (info == null) { withFrameNanos { }; info = find() }
             if (info != null) {
                 val viewport = gridState.layoutInfo.viewportSize.height
                 val desiredTop = (viewport - info.size.height) / 2
                 gridState.scrollBy((info.offset.y - desiredTop).toFloat())
             }
         }
-        delay(80)
-        startFocus.requestSafely()
+        startFocus.requestWhenReady()
+    }
+
+    // Quietly pre-load the albums of the artist you are resting on, so opening it is instant.
+    LaunchedEffect(artists) {
+        snapshotFlow { lastIndex.intValue }.collectLatest { idx ->
+            delay(250)
+            val a = artists.getOrNull(idx) ?: return@collectLatest
+            try { repo.albumsOf(a.id) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
     }
 }

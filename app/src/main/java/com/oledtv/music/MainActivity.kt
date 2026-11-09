@@ -148,7 +148,10 @@ class MainActivity : ComponentActivity() {
 
 sealed interface Screen {
     data object Config : Screen
-    class Artists(val grid: LazyGridState = LazyGridState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen
+    class Artists(val grid: LazyGridState = LazyGridState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen {
+        /** Id of the artist last focused/picked (or the playing artist via Now Playing): where we land on return. */
+        var focusId: String? = null
+    }
     class Artist(val artist: ArtistDto, val grid: LazyGridState = LazyGridState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen
     class Tracks(val albums: List<AlbumDto>, val index: Int, val list: LazyListState = LazyListState(), val last: MutableIntState = mutableIntStateOf(0)) : Screen
     data object Player : Screen
@@ -187,7 +190,7 @@ fun OledApp(prefs: Prefs) {
         val albums = manager.queueAlbums
         val idx = manager.currentAlbumIndex()
         if (artist != null && idx in albums.indices) {
-            val base = stack.firstOrNull { it is Screen.Artists } ?: Screen.Artists()
+            val base = (stack.firstOrNull { it is Screen.Artists } as? Screen.Artists ?: Screen.Artists()).also { it.focusId = artist.id }
             val artistScreen = stack.filterIsInstance<Screen.Artist>().lastOrNull { it.artist.id == artist.id } ?: Screen.Artist(artist)
             stack.clear()
             stack.add(base); stack.add(artistScreen); stack.add(Screen.Tracks(albums, idx))
@@ -237,6 +240,7 @@ fun OledApp(prefs: Prefs) {
             } else when (screen) {
                 is Screen.Artists -> AlbumArtistsScreen(
                     repo = repo, gridState = screen.grid, lastIndex = screen.last, columns = artistColumns, playingArtistId = manager.nowArtistId,
+                    focusArtistId = screen.focusId, onFocusArtist = { screen.focusId = it },
                     onArtistClick = { stack.add(Screen.Artist(it)) },
                     onSettings = { stack.add(Screen.Config) },
                     onNowPlaying = if (manager.hasQueue) ({ nowPlayingStack(true) }) else null,

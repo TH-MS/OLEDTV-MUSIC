@@ -25,6 +25,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.getValue
@@ -63,11 +65,11 @@ fun ArtistDetailScreen(
     playingAlbumId: String?,
     onAlbumClick: (albums: List<AlbumDto>, index: Int) -> Unit,
 ) {
-    var state by remember { mutableStateOf<Load<List<AlbumDto>>>(Load.Loading) }
+    var state by remember { mutableStateOf<Load<List<AlbumDto>>>(repo.cachedAlbums(artist.id)?.let { Load.Ok(it) } ?: Load.Loading) }
     var reload by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(artist.id, reload) {
-        state = Load.Loading
+        if (state is Load.Err) state = Load.Loading
         // Repository sorts by year ASC (unknown last), then name.
         state = try { Load.Ok(repo.albumsOf(artist.id)) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(e.message ?: "Network error") }
     }
@@ -76,7 +78,7 @@ fun ArtistDetailScreen(
         Text(artist.name, fontSize = 32.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.padding(8.dp))
         when (val s = state) {
-            is Load.Loading -> StatusPane("Loading albums…")
+            is Load.Loading -> LoadingPane("Loading albums…")
             is Load.Err -> StatusPane(s.message) { reload++ }
             is Load.Ok -> AlbumGrid(repo, s.value, gridState, lastIndex, onAlbumClick, columns, playingAlbumId)
         }
@@ -132,8 +134,16 @@ private fun AlbumGrid(
 
     LaunchedEffect(albums) {
         gridState.scrollToItem(startIndex)
-        delay(80)
-        startFocus.requestSafely()
+        startFocus.requestWhenReady()
+    }
+
+    // Quietly pre-load the tracks of the album you are resting on, so opening it is instant.
+    LaunchedEffect(albums) {
+        snapshotFlow { lastIndex.intValue }.collectLatest { idx ->
+            delay(250)
+            val a = albums.getOrNull(idx) ?: return@collectLatest
+            try { repo.songsOf(a.id) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        }
     }
 }
 
@@ -150,11 +160,11 @@ fun AlbumTracklistScreen(
     onPlay: (songs: List<SongDto>, startIndex: Int) -> Unit,
 ) {
     val album = albums[albumIndex]
-    var state by remember { mutableStateOf<Load<List<SongDto>>>(Load.Loading) }
+    var state by remember { mutableStateOf<Load<List<SongDto>>>(repo.cachedSongs(album.id)?.let { Load.Ok(it) } ?: Load.Loading) }
     var reload by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(album.id, reload) {
-        state = Load.Loading
+        if (state is Load.Err) state = Load.Loading
         state = try { Load.Ok(repo.songsOf(album.id)) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(e.message ?: "Network error") }
     }
 
@@ -180,7 +190,7 @@ fun AlbumTracklistScreen(
         Spacer(Modifier.width(36.dp))
         Column(Modifier.weight(1f).fillMaxHeight()) {
             when (val s = state) {
-                is Load.Loading -> StatusPane("Loading tracks…")
+                is Load.Loading -> LoadingPane("Loading tracks…")
                 is Load.Err -> StatusPane(s.message) { reload++ }
                 is Load.Ok -> TrackList(s.value, listState, lastIndex, onPlay, playingSongId)
             }
@@ -240,7 +250,6 @@ private fun TrackList(
 
     LaunchedEffect(songs) {
         listState.scrollToItem(startIndex)
-        delay(80)
-        startFocus.requestSafely()
+        startFocus.requestWhenReady()
     }
 }

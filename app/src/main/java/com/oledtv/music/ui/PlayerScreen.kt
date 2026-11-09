@@ -199,8 +199,8 @@ class PlaybackManager private constructor(context: Context) {
     var nowAlbumId by mutableStateOf<String?>(null)
     var nowArtistId by mutableStateOf<String?>(null)
 
-    /** 0 = Fast, 1 = Medium, 2 = Slow: speed of the drifting cover. */
-    var driftSpeed by mutableStateOf(0)
+    /** 0 = Fast, 1 = Medium, 2 = Slow: speed of the drifting cover (default Slow). */
+    var driftSpeed by mutableStateOf(2)
 
     private fun updateNowPlaying() {
         val item = player.currentMediaItem
@@ -548,7 +548,7 @@ private fun ControlButton(glyph: Glyph, modifier: Modifier = Modifier, active: B
     FocusSurface(
         onClick, modifier,
         containerColor = Color.Black,
-        focusedContainerColor = Color(0xFF161616),
+        focusedContainerColor = Color.Black, // no tinted pill behind the focused icon: only the icon + ring
     ) {
         Box(Modifier.padding(horizontal = 30.dp, vertical = 6.dp)) {
             GlyphIcon(glyph, Modifier.size(18.dp).breathe(if (active) OffWhite else Color(0xFF7A7A7A)), tint = if (active) OffWhite else Color(0xFF7A7A7A))
@@ -723,7 +723,7 @@ private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifie
             onClick = onToggle,
             modifier = Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim),
             containerColor = Color.Transparent,
-            focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
+            focusedContainerColor = Color.Transparent,
             showFocus = !hidden,
         ) {
             Text(
