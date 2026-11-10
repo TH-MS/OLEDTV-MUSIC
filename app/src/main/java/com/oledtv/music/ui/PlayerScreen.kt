@@ -2,6 +2,12 @@
 
 package com.oledtv.music.ui
 
+import com.oledtv.music.data.OnlineResult
+import com.oledtv.music.data.OnlineLyrics
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalContext
 import android.content.Context
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
@@ -366,9 +372,25 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     val trackTotal = meta?.extras?.getInt(PlaybackManager.KEY_TRACK_TOTAL, 0) ?: 0
     val trackLabel = if (trackNo > 0 && trackTotal > 0) "Track $trackNo of $trackTotal" else ""
 
+    // Lyrics: the server's own come first (instantly). If they are not time-synced, an online search for synced
+    // lyrics runs quietly in the background and, if it finds some, swaps them in (already at the right line).
+    val appContext = LocalContext.current.applicationContext
+    var online by remember(mediaId) { mutableStateOf(Online.Idle) }
     val lyrics by produceState<Lyrics?>(initialValue = null, mediaId) {
         value = null
-        value = if (mediaId.isEmpty()) Lyrics.EMPTY else try { repo.lyrics(mediaId, artist, title) } catch (e: CancellationException) { throw e } catch (e: Exception) { Lyrics.EMPTY }
+        online = Online.Idle
+        if (mediaId.isEmpty()) { value = Lyrics.EMPTY; return@produceState }
+        val base = try { repo.lyrics(mediaId, artist, title) } catch (e: CancellationException) { throw e } catch (e: Exception) { Lyrics.EMPTY }
+        value = base
+        if (base.synced.isNotEmpty()) return@produceState
+        online = Online.Searching
+        // Wait (briefly) for the track length: it makes the match far more reliable.
+        val dur = withTimeoutOrNull(4_000) { snapshotFlow { duration.longValue }.first { it > 0 } } ?: 0L
+        when (val r = OnlineLyrics.get(appContext).find(artist, title, album, dur)) {
+            is OnlineResult.Found -> { value = Lyrics(synced = r.lines, plain = base.plain); online = Online.Idle }
+            OnlineResult.NotFound -> online = Online.NotFound
+            OnlineResult.Failed -> online = Online.Failed
+        }
     }
 
     // OLED: the cover toggles the rest of the UI off/on. The cover itself always stays (and keeps pixel-shifting).
@@ -504,7 +526,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                 Spacer(Modifier.width(32.dp))
                 // ── Right ~55%
                 LyricsPane(
-                    lyrics, position, duration,
+                    lyrics, online, position, duration,
                     noLyricsHidden = noLyricsHidden,
                     onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
                     onSeek = { ms -> player.seekTo(ms) },
@@ -517,6 +539,9 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
 }
 
 // Icons are drawn directly (explicit colours) so they can never end up invisible against the button background.
+/** State of the background search for synced lyrics. */
+enum class Online { Idle, Searching, NotFound, Failed }
+
 private enum class Glyph { Prev, Play, Pause, Next, Shuffle }
 
 @Composable
@@ -708,12 +733,13 @@ private val LyricDim = Color(0xFF6E6E6E)
 
 @Composable
 private fun LyricsPane(
-    lyrics: Lyrics?, position: State<Long>, duration: State<Long>,
+    lyrics: Lyrics?, online: Online, position: State<Long>, duration: State<Long>,
     noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit, modifier: Modifier,
 ) {
     when {
         lyrics == null -> CenterNote("Loading lyrics…", modifier)
-        lyrics.isEmpty -> NoLyricsBox(noLyricsHidden, onToggleNoLyrics, modifier)
+        lyrics.isEmpty && online == Online.Searching -> CenterNote("Searching for lyrics…", modifier)
+        lyrics.isEmpty -> NoLyricsBox(if (online == Online.NotFound) "No lyrics found" else "No lyrics available", noLyricsHidden, onToggleNoLyrics, modifier)
         lyrics.synced.isNotEmpty() -> SyncedLyrics(lyrics.synced, position, onSeek, modifier)
         else -> PlainLyrics(lyrics.plain.orEmpty(), position, duration, modifier)
     }
@@ -726,7 +752,7 @@ private fun CenterNote(text: String, modifier: Modifier) {
 
 /** Selectable "No lyrics available" box: click to hide the message (OLED), click again to bring it back. */
 @Composable
-private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifier) {
+private fun NoLyricsBox(message: String, hidden: Boolean, onToggle: () -> Unit, modifier: Modifier) {
     // Fully visible for 5 s, then fades linearly to nothing by 10 s (restarts for every track).
     val fade = remember { Animatable(1f) }
     LaunchedEffect(Unit) {
@@ -743,7 +769,7 @@ private fun NoLyricsBox(hidden: Boolean, onToggle: () -> Unit, modifier: Modifie
             showFocus = !hidden,
         ) {
             Text(
-                "No lyrics available",
+                message,
                 Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
                 fontSize = 20.sp,
                 color = if (hidden) Color.Transparent else LyricDim,
@@ -788,8 +814,16 @@ private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: 
         listState.animateScrollToItem(i.coerceIn(0, lines.lastIndex), -(vp * 0.60f - padPx).toInt())
     }
 
+    var placed by remember(lines) { mutableStateOf(false) }
     LaunchedEffect(lines, active, browsing) {
-        if (!browsing) showLine(if (active < 0) 0 else active)
+        if (browsing) return@LaunchedEffect
+        val target = if (active < 0) 0 else active
+        if (!placed) {
+            // First appearance (e.g. lyrics arriving mid-song): jump straight to the current line.
+            val vp = listState.layoutInfo.viewportSize.height
+            listState.scrollToItem(target.coerceIn(0, lines.lastIndex), -(vp * 0.60f - padPx).toInt())
+            placed = true
+        } else showLine(target)
     }
     LaunchedEffect(cursor, browsing) {
         if (browsing) showLine(cursor)
