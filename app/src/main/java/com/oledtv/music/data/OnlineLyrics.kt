@@ -21,7 +21,7 @@ import kotlin.coroutines.resumeWithException
 
 /** Outcome of an online synced-lyrics lookup. */
 sealed interface OnlineResult {
-    data class Found(val lines: List<LyricLine>) : OnlineResult
+    data class Found(val lines: List<LyricLine>, val english: Boolean) : OnlineResult
     data object NotFound : OnlineResult
     /** Network trouble: nothing is remembered, so the next play retries. */
     data object Failed : OnlineResult
@@ -39,7 +39,7 @@ class OnlineLyrics private constructor(context: Context) {
         .build()
 
     private fun key(artist: String, title: String, album: String, durSec: Int): String {
-        val raw = "${artist.trim().lowercase()}|${title.trim().lowercase()}|${album.trim().lowercase()}|$durSec"
+        val raw = "v2|${artist.trim().lowercase()}|${title.trim().lowercase()}|${album.trim().lowercase()}|$durSec"
         return MessageDigest.getInstance("SHA-1").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
@@ -51,7 +51,7 @@ class OnlineLyrics private constructor(context: Context) {
         val none = File(dir, "$k.none")
         val cached = withContext(Dispatchers.IO) {
             when {
-                lrc.exists() -> LrcParser.parse(lrc.readText()).takeIf { it.isNotEmpty() }?.let { OnlineResult.Found(it) }
+                lrc.exists() -> LrcParser.parse(lrc.readText()).takeIf { it.isNotEmpty() }?.let { OnlineResult.Found(it, LyricsLang.looksEnglish(it.joinToString("\n") { l -> l.text })) }
                 none.exists() && System.currentTimeMillis() - none.lastModified() < NOT_FOUND_TTL_MS -> OnlineResult.NotFound
                 else -> null
             }
@@ -61,47 +61,49 @@ class OnlineLyrics private constructor(context: Context) {
         return try {
             val text = fetch(artist, title, album, durSec)
             withContext(Dispatchers.IO) {
-                if (text != null) { lrc.writeText(text); none.delete() } else none.writeText("0")
+                if (text != null) { lrc.writeText(text); none.delete() } else if (durSec > 0) none.writeText("0")
             }
             val lines = text?.let { LrcParser.parse(it) }.orEmpty()
-            if (lines.isNotEmpty()) OnlineResult.Found(lines) else OnlineResult.NotFound
+            if (lines.isNotEmpty()) OnlineResult.Found(lines, LyricsLang.looksEnglish(lines.joinToString("\n") { it.text })) else OnlineResult.NotFound
         } catch (e: CancellationException) { throw e } catch (e: Exception) { OnlineResult.Failed }
     }
 
-    /** Synced LRC text, or null when LRCLIB has no usable match. Throws on network errors. */
+    /**
+     * Best synced LRC text, or null when LRCLIB has no usable match. Throws on network errors.
+     * Only versions whose length matches the track are considered, and an English version is preferred
+     * (the same song is sometimes listed in several languages).
+     */
     private suspend fun fetch(artist: String, title: String, album: String, durSec: Int): String? {
+        data class Cand(val text: String, val diff: Double, val english: Boolean)
+        val cands = ArrayList<Cand>()
+        fun consider(o: com.google.gson.JsonObject) {
+            val s = o.get("syncedLyrics")?.takeIf { !it.isJsonNull }?.asString ?: return
+            if (s.isBlank()) return
+            val d = o.get("duration")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+            val diff = if (durSec > 0 && d > 0) kotlin.math.abs(d - durSec) else 0.0
+            if (durSec > 0 && d > 0 && diff > DUR_TOLERANCE) return
+            cands += Cand(s, diff, LyricsLang.looksEnglish(LrcParser.parse(s).joinToString("\n") { it.text }))
+        }
+
         // 1) exact match
         val get = "https://lrclib.net/api/get".toHttpUrl().newBuilder()
             .addQueryParameter("artist_name", artist).addQueryParameter("track_name", title)
             .apply { if (album.isNotBlank()) addQueryParameter("album_name", album) }
             .apply { if (durSec > 0) addQueryParameter("duration", durSec.toString()) }.build()
         call(get.toString()).use { r ->
-            if (r.isSuccessful) {
-                val o = JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject
-                val s = o.get("syncedLyrics")?.takeIf { !it.isJsonNull }?.asString
-                val d = o.get("duration")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
-                if (!s.isNullOrBlank() && (durSec <= 0 || d <= 0 || kotlin.math.abs(d - durSec) <= DUR_TOLERANCE)) return s
-            } else if (r.code != 404) throw IOException("HTTP ${r.code}")
+            if (r.isSuccessful) consider(JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject)
+            else if (r.code != 404) throw IOException("HTTP ${r.code}")
         }
-        // 2) looser search, still insisting on a matching duration so we never show another version's timings
+        if (cands.any { it.english }) return cands.filter { it.english }.minByOrNull { it.diff }!!.text
+
+        // 2) wider search: may list other versions (including an English one) of the same song
         val search = "https://lrclib.net/api/search".toHttpUrl().newBuilder()
             .addQueryParameter("track_name", title).addQueryParameter("artist_name", artist).build()
         call(search.toString()).use { r ->
-            if (!r.isSuccessful) { if (r.code == 404) return null else throw IOException("HTTP ${r.code}") }
-            val arr = JsonParser.parseString(r.body?.string().orEmpty()).asJsonArray
-            var best: String? = null
-            var bestDiff = Double.MAX_VALUE
-            for (e in arr) {
-                val o = e.asJsonObject
-                val s = o.get("syncedLyrics")?.takeIf { !it.isJsonNull }?.asString ?: continue
-                if (s.isBlank()) continue
-                val d = o.get("duration")?.takeIf { !it.isJsonNull }?.asDouble ?: continue
-                val diff = if (durSec > 0) kotlin.math.abs(d - durSec) else 0.0
-                if (durSec > 0 && diff > DUR_TOLERANCE) continue
-                if (diff < bestDiff) { best = s; bestDiff = diff }
-            }
-            return best
+            if (r.isSuccessful) { for (e in JsonParser.parseString(r.body?.string().orEmpty()).asJsonArray) consider(e.asJsonObject) }
+            else if (r.code != 404) throw IOException("HTTP ${r.code}")
         }
+        return (cands.filter { it.english }.minByOrNull { it.diff } ?: cands.minByOrNull { it.diff })?.text
     }
 
     private suspend fun call(url: String): Response = suspendCancellableCoroutine { cont ->
@@ -115,9 +117,30 @@ class OnlineLyrics private constructor(context: Context) {
 
     companion object {
         private const val UA = "OLEDTV-Music/1.0 (https://github.com/TH-MS/OLEDTV-MUSIC)"
-        private const val DUR_TOLERANCE = 2.0
+        private const val DUR_TOLERANCE = 3.0
         private const val NOT_FOUND_TTL_MS = 30L * 24 * 3600 * 1000
         @Volatile private var inst: OnlineLyrics? = null
         fun get(ctx: Context): OnlineLyrics = inst ?: synchronized(this) { inst ?: OnlineLyrics(ctx).also { inst = it } }
     }
+}
+
+
+/** Very small language sniffing: is a block of lyrics mostly English? (Common English words vs. everything else.) */
+object LyricsLang {
+    private val common = setOf(
+        "the", "and", "you", "your", "i", "i'm", "i'll", "i've", "my", "we", "it", "it's", "is", "of", "to", "that", "this",
+        "with", "for", "are", "was", "be", "not", "but", "just", "can", "don't", "all", "have", "from", "they", "what",
+        "when", "will", "there", "so", "if", "one", "like", "know", "got", "baby", "love", "me", "he", "she", "her", "him",
+        "up", "out", "back", "now", "see", "way", "oh", "yeah", "come", "go", "need", "want", "never", "ever", "been",
+    )
+    private val split = Regex("[^\\p{L}']+")
+
+    private fun ratio(text: String): Pair<Double, Int> {
+        val w = text.lowercase().split(split).filter { it.isNotEmpty() }
+        if (w.isEmpty()) return 0.0 to 0
+        return w.count { it in common }.toDouble() / w.size to w.size
+    }
+
+    fun looksEnglish(text: String): Boolean { val (r, n) = ratio(text); return n < 20 || r >= 0.17 }
+    fun clearlyNonEnglish(text: String): Boolean { val (r, n) = ratio(text); return n >= 40 && r < 0.07 }
 }

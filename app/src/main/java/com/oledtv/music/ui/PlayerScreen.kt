@@ -130,6 +130,7 @@ class PlaybackManager private constructor(context: Context) {
         const val KEY_TRACK_NO = "trackNo"
         const val KEY_ALBUM_INDEX = "albumIndex"
         const val KEY_TRACK_TOTAL = "trackTotal"
+        const val KEY_DURATION_SEC = "durSec"
         @Volatile private var instance: PlaybackManager? = null
         fun get(ctx: Context): PlaybackManager =
             instance ?: synchronized(this) { instance ?: PlaybackManager(ctx.applicationContext).also { instance = it } }
@@ -265,6 +266,7 @@ class PlaybackManager private constructor(context: Context) {
                             putInt(KEY_TRACK_NO, idx + 1)
                             putInt(KEY_TRACK_TOTAL, songs.size)
                             putInt(KEY_ALBUM_INDEX, albumIdx)
+                            putInt(KEY_DURATION_SEC, s.duration ?: 0)
                         })
                         .build(),
                 )
@@ -382,20 +384,39 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
         if (mediaId.isEmpty()) { value = Lyrics.EMPTY; return@produceState }
         val base = try { repo.lyrics(mediaId, artist, title) } catch (e: CancellationException) { throw e } catch (e: Exception) { Lyrics.EMPTY }
         value = base
-        if (base.synced.isNotEmpty()) return@produceState
+        // Search online unless the server already has synced lyrics in (what looks like) English.
+        val baseEnglishOk = base.synced.isNotEmpty() && !LyricsLang.clearlyNonEnglish(base.synced.joinToString("\n") { it.text })
+        if (baseEnglishOk) return@produceState
         online = Online.Searching
-        // Wait (briefly) for the track length: it makes the match far more reliable.
-        val dur = withTimeoutOrNull(4_000) { snapshotFlow { duration.longValue }.first { it > 0 } } ?: 0L
+        // The track's own length (from the server) makes matching reliable. Never use the on-screen duration
+        // state here: for a moment after a track change it still holds the previous song's length.
+        var dur = (item?.mediaMetadata?.extras?.getInt(PlaybackManager.KEY_DURATION_SEC, 0) ?: 0) * 1000L
+        if (dur <= 0) dur = withTimeoutOrNull(4_000) {
+            var d = 0L
+            while (d <= 0) {
+                if (player.currentMediaItem?.mediaId == mediaId) d = player.duration.coerceAtLeast(0L)
+                if (d <= 0) delay(200)
+            }
+            d
+        } ?: 0L
         when (val r = OnlineLyrics.get(appContext).find(artist, title, album, dur)) {
-            is OnlineResult.Found -> { value = Lyrics(synced = r.lines, plain = base.plain); online = Online.Idle }
-            OnlineResult.NotFound -> online = Online.NotFound
-            OnlineResult.Failed -> online = Online.Failed
+            is OnlineResult.Found -> {
+                val baseEnglish = base.plain?.let { LyricsLang.looksEnglish(it) } == true
+                val baseSyncedNonEnglish = base.synced.isNotEmpty()
+                // Swap in an English version always; a non-English one only if it is an improvement (we had nothing better).
+                if (r.english || (!baseEnglish && !baseSyncedNonEnglish)) {
+                    value = Lyrics(synced = r.lines, plain = base.plain); online = Online.Idle
+                } else online = Online.Idle
+            }
+            OnlineResult.NotFound -> online = if (base.isEmpty) Online.NotFound else Online.Idle
+            OnlineResult.Failed -> online = if (base.isEmpty) Online.Failed else Online.Idle
         }
     }
 
     // OLED: the cover toggles the rest of the UI off/on. The cover itself always stays (and keeps pixel-shifting).
     var uiVisible by remember { mutableStateOf(true) }
     var noLyricsHidden by remember { mutableStateOf(false) }
+    var lyricsHidden by remember { mutableStateOf(false) }
     BackHandler(enabled = !uiVisible) { uiVisible = true }
 
     // Cover drift speed (click the cover to cycle) + a short label shown above the cover.
@@ -422,6 +443,18 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
             if (System.currentTimeMillis() - lastKeyAt[0] > 20_000) ringActive = false
         }
     }
+    var lyricRingActive by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1_000)
+            if (System.currentTimeMillis() - lastKeyAt[0] > 10_000) lyricRingActive = false
+        }
+    }
+    val lyricFade = animateFloatAsState(
+        if (lyricRingActive) 1f else 0f,
+        tween(if (lyricRingActive) 250 else 2_500, easing = LinearEasing),
+        label = "lyricFade",
+    )
     val ringFade = animateFloatAsState(
         if (ringActive) 1f else 0f,
         tween(if (ringActive) 250 else 2_500, easing = LinearEasing),
@@ -431,9 +464,17 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     // Holding SELECT on any element for 2.5 s hides the whole UI (hold again, press a direction or Back to restore).
     val scope = rememberCoroutineScope()
     val hold = remember { object { var job: Job? = null; var fired = false } }
+    val wake = remember { object { var block = false } }
     val onRootKey: (KeyEvent) -> Boolean = { ev ->
         lastKeyAt[0] = System.currentTimeMillis()
+        // Left/Right pressed after the rings faded away: it only brings the highlight back (the progress bar must not
+        // seek on a press the user may have meant for somewhere else). Held until the key is released.
+        if (ev.key == Key.DirectionLeft || ev.key == Key.DirectionRight) {
+            if (ev.type == KeyEventType.KeyDown && !ringActive) wake.block = true
+            if (ev.type == KeyEventType.KeyUp) wake.block = false
+        }
         ringActive = true
+        lyricRingActive = true
         val isSelect = ev.key == Key.DirectionCenter || ev.key == Key.Enter || ev.key == Key.NumPadEnter
         val isDirection = ev.key == Key.DirectionUp || ev.key == Key.DirectionDown ||
             ev.key == Key.DirectionLeft || ev.key == Key.DirectionRight
@@ -510,6 +551,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                         trackLabel = trackLabel,
                         onSeek = { player.seekTo(it) },
                         onTogglePlay = togglePlay,
+                        blockSeek = { wake.block },
                     )
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -525,11 +567,15 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
             run {
                 Spacer(Modifier.width(32.dp))
                 // ── Right ~55%
-                LyricsPane(
+                LyricsArea(
                     lyrics, online, position, duration,
                     noLyricsHidden = noLyricsHidden,
                     onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
-                    onSeek = { ms -> player.seekTo(ms) },
+                    onSeek = { ms -> player.seekTo(ms); if (!player.playWhenReady) player.play() },
+                    lyricsHidden = lyricsHidden,
+                    onToggleLyricsHidden = { lyricsHidden = !lyricsHidden },
+                    onHideUi = { uiVisible = false },
+                    lyricFade = lyricFade,
                     modifier = Modifier.weight(0.55f).fillMaxHeight().graphicsLayer { alpha = if (uiVisible) 1f else 0f },
                 )
             }
@@ -664,6 +710,7 @@ private fun ProgressRow(
     trackLabel: String,
     onSeek: (Long) -> Unit,
     onTogglePlay: () -> Unit,
+    blockSeek: () -> Boolean,
 ) {
     var focused by remember { mutableStateOf(false) }
     var scrub by remember { mutableStateOf<Long?>(null) }
@@ -686,7 +733,7 @@ private fun ProgressRow(
                 if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (ev.key) {
                     Key.DirectionLeft, Key.DirectionRight -> {
-                        if (dur > 0) {
+                        if (dur > 0 && !blockSeek()) {
                             val dir = if (ev.key == Key.DirectionRight) 1 else -1
                             val repeat = ev.nativeKeyEvent.repeatCount
                             val step = if (repeat == 0) 10_000L else (10_000L * (1 + repeat / 4)).coerceAtMost(60_000L)
@@ -734,15 +781,104 @@ private val LyricDim = Color(0xFF6E6E6E)
 @Composable
 private fun LyricsPane(
     lyrics: Lyrics?, online: Online, position: State<Long>, duration: State<Long>,
-    noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit, modifier: Modifier,
+    noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit, paneFocus: FocusRequester, modifier: Modifier,
 ) {
     when {
         lyrics == null -> CenterNote("Loading lyrics…", modifier)
         lyrics.isEmpty && online == Online.Searching -> CenterNote("Searching for lyrics…", modifier)
-        lyrics.isEmpty -> NoLyricsBox(if (online == Online.NotFound) "No lyrics found" else "No lyrics available", noLyricsHidden, onToggleNoLyrics, modifier)
-        lyrics.synced.isNotEmpty() -> SyncedLyrics(lyrics.synced, position, onSeek, modifier)
-        else -> PlainLyrics(lyrics.plain.orEmpty(), position, duration, modifier)
+        lyrics.isEmpty -> NoLyricsBox(if (online == Online.NotFound) "No lyrics found" else "No lyrics available", noLyricsHidden, onToggleNoLyrics, paneFocus, modifier)
+        lyrics.synced.isNotEmpty() -> SyncedLyrics(lyrics.synced, position, onSeek, paneFocus, modifier)
+        else -> PlainLyrics(lyrics.plain.orEmpty(), position, duration, paneFocus, modifier)
     }
+}
+
+/**
+ * The lyrics pane plus its small options menu. While the lyric border is highlighted a "three bars" button sits at
+ * the pane's right edge (vertically centred); RIGHT opens a short list to its left (Hide/Show Lyrics, Hide UI).
+ * LEFT or BACK closes it again and returns to the lyrics border. Bars and menu fade with the lyric border.
+ */
+@Composable
+private fun LyricsArea(
+    lyrics: Lyrics?, online: Online, position: State<Long>, duration: State<Long>,
+    noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit,
+    lyricsHidden: Boolean, onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
+    lyricFade: State<Float>, modifier: Modifier,
+) {
+    val paneFocus = remember { FocusRequester() }
+    var menuOpen by remember { mutableStateOf(false) }
+    var hasFocus by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val hasLyrics = lyrics != null && !lyrics.isEmpty
+    val closeMenu: () -> Unit = { menuOpen = false; scope.launch { paneFocus.requestWhenReady() } }
+
+    CompositionLocalProvider(LocalRingFade provides lyricFade) {
+        Box(
+            modifier
+                .onFocusChanged { hasFocus = it.hasFocus; if (!it.hasFocus) menuOpen = false }
+                .onPreviewKeyEvent { ev ->
+                    if (!menuOpen && hasFocus && ev.key == Key.DirectionRight && ev.type == KeyEventType.KeyDown) { menuOpen = true; true } else false
+                },
+        ) {
+            if (lyricsHidden && hasLyrics) HiddenLyrics(paneFocus, Modifier.fillMaxSize())
+            else LyricsPane(lyrics, online, position, duration, noLyricsHidden, onToggleNoLyrics, onSeek, paneFocus, Modifier.fillMaxSize())
+
+            // The "three bars" button: only while the lyric border is highlighted.
+            Box(
+                Modifier.align(Alignment.CenterEnd).padding(end = 2.dp)
+                    .graphicsLayer { alpha = if (hasFocus) lyricFade.value else 0f }
+                    .size(30.dp)
+                    .focusRing(menuOpen, RoundedCornerShape(8.dp), 2.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(Modifier.size(width = 16.dp, height = 12.dp).breathe(OffWhite)) {
+                    val sw = size.height * 0.18f
+                    for (i in 0..2) drawLine(OffWhite, Offset(0f, size.height * i / 2f), Offset(size.width, size.height * i / 2f), sw)
+                }
+            }
+
+            if (menuOpen) {
+                BackHandler(true) { closeMenu() }
+                val first = remember { FocusRequester() }
+                val second = remember { FocusRequester() }
+                LaunchedEffect(Unit) { (if (hasLyrics) first else second).requestWhenReady() }
+                Column(
+                    Modifier.align(Alignment.CenterEnd).padding(end = 40.dp)
+                        .graphicsLayer { alpha = lyricFade.value.coerceAtLeast(0.35f) }
+                        .background(Color(0xFF0B0B0B), RoundedCornerShape(14.dp))
+                        .padding(8.dp)
+                        .onPreviewKeyEvent { ev ->
+                            if (ev.key == Key.DirectionLeft) { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
+                            else if (ev.key == Key.DirectionRight) true
+                            else false
+                        },
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (hasLyrics) {
+                        FocusSurface(onClick = { onToggleLyricsHidden(); closeMenu() }, Modifier.width(190.dp).focusRequester(first)) {
+                            Text(if (lyricsHidden) "Show Lyrics" else "Hide Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
+                        }
+                    } else {
+                        Box(Modifier.width(190.dp)) {
+                            Text("No Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
+                        }
+                    }
+                    FocusSurface(onClick = { menuOpen = false; onHideUi() }, Modifier.width(190.dp).focusRequester(second)) {
+                        Text("Hide UI", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Lyrics switched off from the menu: nothing is drawn, but the border can still be selected to reach the menu again. */
+@Composable
+private fun HiddenLyrics(paneFocus: FocusRequester, modifier: Modifier) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier.focusRequester(paneFocus).onFocusChanged { focused = it.isFocused }
+            .focusRing(focused, RoundedCornerShape(12.dp), 2.dp).focusable()
+    )
 }
 
 @Composable
@@ -752,7 +888,7 @@ private fun CenterNote(text: String, modifier: Modifier) {
 
 /** Selectable "No lyrics available" box: click to hide the message (OLED), click again to bring it back. */
 @Composable
-private fun NoLyricsBox(message: String, hidden: Boolean, onToggle: () -> Unit, modifier: Modifier) {
+private fun NoLyricsBox(message: String, hidden: Boolean, onToggle: () -> Unit, paneFocus: FocusRequester, modifier: Modifier) {
     // Fully visible for 5 s, then fades linearly to nothing by 10 s (restarts for every track).
     val fade = remember { Animatable(1f) }
     LaunchedEffect(Unit) {
@@ -763,7 +899,7 @@ private fun NoLyricsBox(message: String, hidden: Boolean, onToggle: () -> Unit, 
     Box(modifier, contentAlignment = Alignment.Center) {
         FocusSurface(
             onClick = onToggle,
-            modifier = Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim),
+            modifier = Modifier.focusRequester(paneFocus).graphicsLayer { alpha = fade.value }.breathe(LyricDim),
             containerColor = Color.Transparent,
             focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
             showFocus = !hidden,
@@ -789,7 +925,7 @@ private fun activeIndex(lines: List<LyricLine>, posMs: Long): Int {
 }
 
 @Composable
-private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: (Long) -> Unit, modifier: Modifier) {
+private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: (Long) -> Unit, paneFocus: FocusRequester, modifier: Modifier) {
     val listState = rememberLazyListState()
     val density = LocalDensity.current
     val padPx = with(density) { 220.dp.toPx() }
@@ -832,6 +968,7 @@ private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: 
     LazyColumn(
         state = listState,
         modifier = modifier
+            .focusRequester(paneFocus)
             .onPreviewKeyEvent { ev ->
                 val up = ev.key == Key.DirectionUp
                 val down = ev.key == Key.DirectionDown
@@ -884,7 +1021,7 @@ private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: 
  * focus the pane (D-pad RIGHT) and use UP/DOWN to scroll manually (auto-scroll pauses for 10 s).
  */
 @Composable
-private fun PlainLyrics(text: String, position: State<Long>, duration: State<Long>, modifier: Modifier) {
+private fun PlainLyrics(text: String, position: State<Long>, duration: State<Long>, paneFocus: FocusRequester, modifier: Modifier) {
     val lines = remember(text) { text.lines() }
     val listState: LazyListState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -908,6 +1045,7 @@ private fun PlainLyrics(text: String, position: State<Long>, duration: State<Lon
     LazyColumn(
         state = listState,
         modifier = modifier
+            .focusRequester(paneFocus)
             .onPreviewKeyEvent { ev ->
                 if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val delta = when (ev.key) { Key.DirectionDown -> 260f; Key.DirectionUp -> -260f; else -> return@onPreviewKeyEvent false }

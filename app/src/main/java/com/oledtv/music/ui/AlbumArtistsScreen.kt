@@ -346,17 +346,18 @@ fun AlbumArtistsScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             // The header is always a single line (same height with or without Now Playing), so the artist grid never moves.
             Text("OLED MUSIC PLAYER", fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-            Spacer(Modifier.width(24.dp))
+            Spacer(Modifier.width(12.dp))
             if (onNowPlaying != null) {
-                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                // Generous gaps on both sides: the focused button is enlarged ~8 %, which must never reach its neighbours.
+                Box(Modifier.weight(1f).padding(horizontal = 28.dp), contentAlignment = Alignment.CenterEnd) {
                   FocusSurface(onNowPlaying, Modifier.widthIn(max = 440.dp).fillMaxWidth().focusRequester(topFocus), playing = true) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("NOW PLAYING", fontSize = 10.sp, letterSpacing = 1.5.sp, color = Color(0xFF8A8A8A))
                         Marquee(nowLine ?: "Now Playing", Modifier.fillMaxWidth(), fontSize = 15.sp)
                     }
                   }
                 }
-                Spacer(Modifier.width(16.dp))
+                Spacer(Modifier.width(12.dp))
             } else Spacer(Modifier.weight(1f))
             FocusSurface(onSettings, if (onNowPlaying == null) Modifier.focusRequester(topFocus) else Modifier) { Text("Settings", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
         }
