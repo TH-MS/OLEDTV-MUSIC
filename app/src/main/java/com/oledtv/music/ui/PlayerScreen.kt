@@ -381,10 +381,13 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     // Lyrics: the server's own come first (instantly). If they are not time-synced, an online search for synced
     // lyrics runs quietly in the background and, if it finds some, swaps them in (already at the right line).
     val appContext = LocalContext.current.applicationContext
+    // "Hide Lyrics" sticks while moving between songs: nothing is looked up until "Show Lyrics" is chosen.
+    var lyricsHidden by remember { mutableStateOf(false) }
     var online by remember(mediaId) { mutableStateOf(Online.Idle) }
-    val lyrics by produceState<Lyrics?>(initialValue = null, mediaId) {
+    val lyrics by produceState<Lyrics?>(initialValue = null, mediaId, lyricsHidden) {
         value = null
         online = Online.Idle
+        if (lyricsHidden) return@produceState
         if (mediaId.isEmpty()) { value = Lyrics.EMPTY; return@produceState }
         val base = try { repo.lyrics(mediaId, artist, title) } catch (e: CancellationException) { throw e } catch (e: Exception) { Lyrics.EMPTY }
         value = base
@@ -420,7 +423,6 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     // OLED: the cover toggles the rest of the UI off/on. The cover itself always stays (and keeps pixel-shifting).
     var uiVisible by remember { mutableStateOf(true) }
     var noLyricsHidden by remember { mutableStateOf(false) }
-    var lyricsHidden by remember { mutableStateOf(false) }
     BackHandler(enabled = !uiVisible) { uiVisible = true }
 
     // Cover drift speed (click the cover to cycle) + a short label shown above the cover.
@@ -577,6 +579,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                     onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
                     onSeek = { ms -> player.seekTo(ms); if (!player.playWhenReady) player.play() },
                     lyricsHidden = lyricsHidden,
+                    trackKey = mediaId,
                     onToggleLyricsHidden = { lyricsHidden = !lyricsHidden },
                     onHideUi = { uiVisible = false },
                     lyricFade = lyricFade,
@@ -808,7 +811,7 @@ private fun LyricsPane(
 private fun LyricsArea(
     lyrics: Lyrics?, online: Online, position: State<Long>, duration: State<Long>,
     noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit,
-    lyricsHidden: Boolean, onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
+    lyricsHidden: Boolean, trackKey: String, onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
     lyricFade: State<Float>, modifier: Modifier,
 ) {
     val paneFocus = remember { FocusRequester() }
@@ -834,23 +837,26 @@ private fun LyricsArea(
         if (menuOpen) {
             withFrameNanos { }
             delay(30)
-            try { (if (hasLyrics) first else second).requestFocus() } catch (_: IllegalStateException) { }
+            try { (if (hasLyrics || lyricsHidden) first else second).requestFocus() } catch (_: IllegalStateException) { }
         }
     }
     BackHandler(enabled = menuOpen) { closeMenu() }
 
     CompositionLocalProvider(LocalRingFade provides lyricFade) {
         Box(modifier.onFocusChanged { hasFocus = it.hasFocus }) {
-            if (lyricsHidden && hasLyrics) key(lyrics) { HiddenLyrics(Modifier.fillMaxSize()) }
+            if (lyricsHidden) key(trackKey) { HiddenLyrics(Modifier.fillMaxSize()) }
             else LyricsPane(lyrics, online, position, duration, noLyricsHidden, onToggleNoLyrics, onSeek, paneFocus, Modifier.fillMaxSize())
 
             // The "three bars" button, in the page margin just right of the lyrics box. Highlighting it does nothing;
             // only SELECT opens the list.
+            Box(
+                Modifier.align(Alignment.CenterEnd).offset(x = 42.dp).size(width = 50.dp, height = 62.dp)
+                    .graphicsLayer { alpha = if (hasFocus) lyricFade.value else 0f },
+                contentAlignment = Alignment.Center,
+            ) {
             FocusSurface(
                 onClick = { openedAt = android.os.SystemClock.uptimeMillis(); menuOpen = true },
-                modifier = Modifier.align(Alignment.CenterEnd).offset(x = 42.dp).size(width = 34.dp, height = 44.dp)
-                    .graphicsLayer { alpha = if (hasFocus) lyricFade.value else 0f }
-                    .focusRequester(barsFocus),
+                modifier = Modifier.size(width = 34.dp, height = 44.dp).focusRequester(barsFocus),
                 shape = RoundedCornerShape(8.dp),
                 containerColor = Color.Transparent,
                 focusedContainerColor = Color.Transparent,
@@ -861,6 +867,7 @@ private fun LyricsArea(
                         for (i in 0..2) drawLine(OffWhite, Offset(0f, size.height * i / 2f), Offset(size.width, size.height * i / 2f), sw)
                     }
                 }
+            }
             }
 
             Column(
@@ -873,32 +880,32 @@ private fun LyricsArea(
                         when (ev.key) {
                             Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
                             Key.DirectionRight -> true
-                            Key.DirectionUp -> { if (ev.type == KeyEventType.KeyDown && current == 2 && hasLyrics) { try { first.requestFocus() } catch (_: IllegalStateException) { } }; true }
+                            Key.DirectionUp -> { if (ev.type == KeyEventType.KeyDown && current == 2 && (hasLyrics || lyricsHidden)) { try { first.requestFocus() } catch (_: IllegalStateException) { } }; true }
                             Key.DirectionDown -> { if (ev.type == KeyEventType.KeyDown && current == 1) { try { second.requestFocus() } catch (_: IllegalStateException) { } }; true }
                             else -> false
                         }
                     },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (hasLyrics) {
+                if (hasLyrics || lyricsHidden) {
                     FocusSurface(
                         onClick = { if (menuOpen && armed()) { onToggleLyricsHidden(); closeMenu() } },
-                        Modifier.width(190.dp).focusProperties { canFocus = menuOpen }.focusRequester(first)
+                        Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(first)
                             .onFocusChanged { if (it.isFocused) current = 1 },
                     ) {
-                        Text(if (lyricsHidden) "Show Lyrics" else "Hide Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
+                        Text(if (lyricsHidden) "Show Lyrics" else "Hide Lyrics", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
                     }
                 } else {
-                    Box(Modifier.width(190.dp)) {
-                        Text("No Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
+                    Box(Modifier.width(140.dp)) {
+                        Text("No Lyrics", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
                     }
                 }
                 FocusSurface(
                     onClick = { if (menuOpen && armed()) { closeMenu(); onHideUi() } },
-                    Modifier.width(190.dp).focusProperties { canFocus = menuOpen }.focusRequester(second)
+                    Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(second)
                         .onFocusChanged { if (it.isFocused) current = 2 },
                 ) {
-                    Text("Hide UI", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
+                    Text("Hide UI", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
                 }
             }
         }
@@ -911,8 +918,8 @@ private fun HiddenLyrics(modifier: Modifier) {
     val fade = remember { Animatable(1f) }
     LaunchedEffect(Unit) {
         fade.snapTo(1f)
-        delay(5_000)
-        fade.animateTo(0f, tween(5_000, easing = LinearEasing))
+        delay(1_500)
+        fade.animateTo(0f, tween(1_500, easing = LinearEasing))
     }
     Box(modifier, contentAlignment = Alignment.Center) {
         Text("Lyrics hidden", Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim), fontSize = 20.sp, color = LyricDim)
