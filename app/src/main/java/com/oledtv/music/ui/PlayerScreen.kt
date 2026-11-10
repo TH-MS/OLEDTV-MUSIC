@@ -2,6 +2,7 @@
 
 package com.oledtv.music.ui
 
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.key
 import com.oledtv.music.data.LyricsLang
@@ -812,20 +813,41 @@ private fun LyricsArea(
 ) {
     val paneFocus = remember { FocusRequester() }
     val barsFocus = remember { FocusRequester() }
+    val first = remember { FocusRequester() }
+    val second = remember { FocusRequester() }
     var menuOpen by remember { mutableStateOf(false) }
+    var openedAt by remember { mutableLongStateOf(0L) }
+    var current by remember { mutableIntStateOf(0) }
     var hasFocus by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     val hasLyrics = lyrics != null && !lyrics.isEmpty
-    val closeMenu: () -> Unit = { menuOpen = false; scope.launch { barsFocus.requestWhenReady() } }
+
+    // The menu items stay composed (just invisible and unfocusable while closed), so opening and closing never has to
+    // add/remove the focused element: that is what used to drop focus and let it fall back to the album cover.
+    // Closing hands focus to the bars first, and only then hides the list.
+    val closeMenu: () -> Unit = {
+        try { barsFocus.requestFocus() } catch (_: IllegalStateException) { }
+        menuOpen = false
+    }
+    // Ignore a stray key-release that belongs to the press which opened the menu.
+    fun armed() = android.os.SystemClock.uptimeMillis() - openedAt > 400
+    LaunchedEffect(menuOpen) {
+        if (menuOpen) {
+            withFrameNanos { }
+            delay(30)
+            try { (if (hasLyrics) first else second).requestFocus() } catch (_: IllegalStateException) { }
+        }
+    }
+    BackHandler(enabled = menuOpen) { closeMenu() }
 
     CompositionLocalProvider(LocalRingFade provides lyricFade) {
-        Box(modifier.onFocusChanged { hasFocus = it.hasFocus; if (!it.hasFocus) menuOpen = false }) {
+        Box(modifier.onFocusChanged { hasFocus = it.hasFocus }) {
             if (lyricsHidden && hasLyrics) key(lyrics) { HiddenLyrics(Modifier.fillMaxSize()) }
             else LyricsPane(lyrics, online, position, duration, noLyricsHidden, onToggleNoLyrics, onSeek, paneFocus, Modifier.fillMaxSize())
 
-            // The "three bars" button, in the page margin just right of the lyrics box.
+            // The "three bars" button, in the page margin just right of the lyrics box. Highlighting it does nothing;
+            // only SELECT opens the list.
             FocusSurface(
-                onClick = { menuOpen = true },
+                onClick = { openedAt = android.os.SystemClock.uptimeMillis(); menuOpen = true },
                 modifier = Modifier.align(Alignment.CenterEnd).offset(x = 42.dp).size(width = 34.dp, height = 44.dp)
                     .graphicsLayer { alpha = if (hasFocus) lyricFade.value else 0f }
                     .focusRequester(barsFocus),
@@ -841,36 +863,42 @@ private fun LyricsArea(
                 }
             }
 
-            if (menuOpen) {
-                BackHandler(true) { closeMenu() }
-                val first = remember { FocusRequester() }
-                val second = remember { FocusRequester() }
-                LaunchedEffect(Unit) { (if (hasLyrics) first else second).requestWhenReady() }
-                Column(
-                    Modifier.align(Alignment.CenterEnd).padding(end = 10.dp)
-                        .background(Color(0xFF0B0B0B), RoundedCornerShape(14.dp))
-                        .padding(8.dp)
-                        .onPreviewKeyEvent { ev ->
-                            when (ev.key) {
-                                Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
-                                Key.DirectionRight -> true
-                                else -> false
-                            }
-                        },
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+            Column(
+                Modifier.align(Alignment.CenterEnd).padding(end = 10.dp)
+                    .graphicsLayer { alpha = if (menuOpen) 1f else 0f }
+                    .background(Color(0xFF0B0B0B), RoundedCornerShape(14.dp))
+                    .padding(8.dp)
+                    .onPreviewKeyEvent { ev ->
+                        if (!menuOpen) return@onPreviewKeyEvent false
+                        when (ev.key) {
+                            Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
+                            Key.DirectionRight -> true
+                            Key.DirectionUp -> { if (ev.type == KeyEventType.KeyDown && current == 2 && hasLyrics) { try { first.requestFocus() } catch (_: IllegalStateException) { } }; true }
+                            Key.DirectionDown -> { if (ev.type == KeyEventType.KeyDown && current == 1) { try { second.requestFocus() } catch (_: IllegalStateException) { } }; true }
+                            else -> false
+                        }
+                    },
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (hasLyrics) {
+                    FocusSurface(
+                        onClick = { if (menuOpen && armed()) { onToggleLyricsHidden(); closeMenu() } },
+                        Modifier.width(190.dp).focusProperties { canFocus = menuOpen }.focusRequester(first)
+                            .onFocusChanged { if (it.isFocused) current = 1 },
+                    ) {
+                        Text(if (lyricsHidden) "Show Lyrics" else "Hide Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
+                    }
+                } else {
+                    Box(Modifier.width(190.dp)) {
+                        Text("No Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
+                    }
+                }
+                FocusSurface(
+                    onClick = { if (menuOpen && armed()) { closeMenu(); onHideUi() } },
+                    Modifier.width(190.dp).focusProperties { canFocus = menuOpen }.focusRequester(second)
+                        .onFocusChanged { if (it.isFocused) current = 2 },
                 ) {
-                    if (hasLyrics) {
-                        FocusSurface(onClick = { onToggleLyricsHidden(); closeMenu() }, Modifier.width(190.dp).focusRequester(first)) {
-                            Text(if (lyricsHidden) "Show Lyrics" else "Hide Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
-                        }
-                    } else {
-                        Box(Modifier.width(190.dp)) {
-                            Text("No Lyrics", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
-                        }
-                    }
-                    FocusSurface(onClick = { menuOpen = false; onHideUi() }, Modifier.width(190.dp).focusRequester(second)) {
-                        Text("Hide UI", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
-                    }
+                    Text("Hide UI", Modifier.padding(horizontal = 18.dp, vertical = 10.dp), fontSize = 18.sp)
                 }
             }
         }
