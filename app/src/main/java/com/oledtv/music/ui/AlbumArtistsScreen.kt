@@ -2,6 +2,7 @@
 
 package com.oledtv.music.ui
 
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.layout.onSizeChanged
@@ -343,16 +344,20 @@ fun AlbumArtistsScreen(
 
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("OLED MUSIC PLAYER", Modifier.weight(1f), fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            // The header is always a single line (same height with or without Now Playing), so the artist grid never moves.
+            Text("OLED MUSIC PLAYER", fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+            Spacer(Modifier.width(24.dp))
             if (onNowPlaying != null) {
-                FocusSurface(onNowPlaying, Modifier.width(440.dp).focusRequester(topFocus), playing = true) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                  FocusSurface(onNowPlaying, Modifier.widthIn(max = 440.dp).fillMaxWidth().focusRequester(topFocus), playing = true) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("NOW PLAYING", fontSize = 10.sp, letterSpacing = 1.5.sp, color = Color(0xFF8A8A8A))
-                        Marquee(nowLine ?: "Now Playing", Modifier.fillMaxWidth())
+                        Marquee(nowLine ?: "Now Playing", Modifier.fillMaxWidth(), fontSize = 15.sp)
                     }
+                  }
                 }
                 Spacer(Modifier.width(16.dp))
-            }
+            } else Spacer(Modifier.weight(1f))
             FocusSurface(onSettings, if (onNowPlaying == null) Modifier.focusRequester(topFocus) else Modifier) { Text("Settings", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
         }
         Spacer(Modifier.padding(8.dp))
