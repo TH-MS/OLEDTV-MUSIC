@@ -251,6 +251,7 @@ fun OledApp(prefs: Prefs) {
                     onArtistClick = { stack.add(Screen.Artist(it)) },
                     onSettings = { stack.add(Screen.Config) },
                     onNowPlaying = if (manager.hasQueue) ({ nowPlayingStack(true) }) else null,
+                    nowLine = manager.nowLine,
                     centre = screen.centre, onCentred = { screen.centre = false },
                 )
                 is Screen.Artist -> ArtistDetailScreen(

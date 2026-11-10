@@ -329,6 +329,7 @@ fun AlbumArtistsScreen(
     onArtistClick: (ArtistDto) -> Unit,
     onSettings: () -> Unit,
     onNowPlaying: (() -> Unit)?,
+    nowLine: String? = null,
 ) {
     var state by remember { mutableStateOf<Load<List<ArtistDto>>>(repo.cachedArtists()?.let { Load.Ok(it) } ?: Load.Loading) }
     var reload by remember { mutableIntStateOf(0) }
@@ -344,7 +345,12 @@ fun AlbumArtistsScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("OLED MUSIC PLAYER", Modifier.weight(1f), fontSize = 32.sp, fontWeight = FontWeight.Bold)
             if (onNowPlaying != null) {
-                FocusSurface(onNowPlaying, Modifier.focusRequester(topFocus)) { Text("Now Playing", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
+                FocusSurface(onNowPlaying, Modifier.width(440.dp).focusRequester(topFocus), playing = true) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 7.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("NOW PLAYING", fontSize = 10.sp, letterSpacing = 1.5.sp, color = Color(0xFF8A8A8A))
+                        Marquee(nowLine ?: "Now Playing", Modifier.fillMaxWidth())
+                    }
+                }
                 Spacer(Modifier.width(16.dp))
             }
             FocusSurface(onSettings, if (onNowPlaying == null) Modifier.focusRequester(topFocus) else Modifier) { Text("Settings", Modifier.padding(horizontal = 20.dp, vertical = 10.dp), fontSize = 18.sp) }
@@ -449,3 +455,38 @@ private fun ArtistGrid(
     }
 }
 
+
+
+/**
+ * One line of text in the available width. Fits: centred and still. Too long: waits 3 s, scrolls slowly to the
+ * end, pauses briefly, then restarts (waiting 3 s again on every loop).
+ */
+@Composable
+fun Marquee(text: String, modifier: Modifier = Modifier, fontSize: androidx.compose.ui.unit.TextUnit = 16.sp) {
+    val density = LocalDensity.current
+    var boxW by remember { mutableIntStateOf(0) }
+    var textW by remember(text) { mutableIntStateOf(0) }
+    val offset = remember(text) { Animatable(0f) }
+    LaunchedEffect(text, textW, boxW) {
+        offset.snapTo(0f)
+        val overflow = (textW - boxW).toFloat()
+        if (boxW == 0 || overflow <= 1f) return@LaunchedEffect
+        val speed = with(density) { 28.dp.toPx() }
+        while (true) {
+            delay(3_000)
+            offset.animateTo(-overflow, tween((overflow / speed * 1000f).toInt().coerceAtLeast(300), easing = LinearEasing))
+            delay(1_200)
+            offset.snapTo(0f)
+        }
+    }
+    Box(modifier.clipToBounds().onSizeChanged { boxW = it.width }, contentAlignment = Alignment.CenterStart) {
+        Text(
+            text,
+            modifier = Modifier
+                .wrapContentWidth(align = Alignment.Start, unbounded = true)
+                .onSizeChanged { textW = it.width }
+                .graphicsLayer { translationX = if (textW in 1..boxW) (boxW - textW) / 2f else offset.value },
+            fontSize = fontSize, maxLines = 1, softWrap = false, color = UiWhite,
+        )
+    }
+}
