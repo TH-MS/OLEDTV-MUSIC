@@ -2,6 +2,8 @@
 
 package com.oledtv.music.ui
 
+import androidx.compose.foundation.layout.offset
+import androidx.compose.runtime.key
 import com.oledtv.music.data.LyricsLang
 import com.oledtv.music.data.OnlineResult
 import com.oledtv.music.data.OnlineLyrics
@@ -794,9 +796,12 @@ private fun LyricsPane(
 }
 
 /**
- * The lyrics pane plus its small options menu. While the lyric border is highlighted a "three bars" button sits at
- * the pane's right edge (vertically centred); RIGHT opens a short list to its left (Hide/Show Lyrics, Hide UI).
- * LEFT or BACK closes it again and returns to the lyrics border. Bars and menu fade with the lyric border.
+ * The lyrics pane plus its options menu.
+ *  - A small "three bars" button sits just OUTSIDE the right edge of the lyrics box, vertically centred. It is an
+ *    ordinary focus target: press Right from the lyrics border to highlight it (that alone does nothing).
+ *  - SELECT on the bars opens a short list to the left of it (Hide/Show Lyrics, Hide UI).
+ *  - LEFT or BACK closes the list and leaves the bars highlighted; LEFT again returns to the lyrics.
+ * The bars and the lyric border fade together after 10 s of inactivity (lyricFade).
  */
 @Composable
 private fun LyricsArea(
@@ -806,34 +811,33 @@ private fun LyricsArea(
     lyricFade: State<Float>, modifier: Modifier,
 ) {
     val paneFocus = remember { FocusRequester() }
+    val barsFocus = remember { FocusRequester() }
     var menuOpen by remember { mutableStateOf(false) }
     var hasFocus by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val hasLyrics = lyrics != null && !lyrics.isEmpty
-    val closeMenu: () -> Unit = { menuOpen = false; scope.launch { paneFocus.requestWhenReady() } }
+    val closeMenu: () -> Unit = { menuOpen = false; scope.launch { barsFocus.requestWhenReady() } }
 
     CompositionLocalProvider(LocalRingFade provides lyricFade) {
-        Box(
-            modifier
-                .onFocusChanged { hasFocus = it.hasFocus; if (!it.hasFocus) menuOpen = false }
-                .onPreviewKeyEvent { ev ->
-                    if (!menuOpen && hasFocus && ev.key == Key.DirectionRight && ev.type == KeyEventType.KeyDown) { menuOpen = true; true } else false
-                },
-        ) {
-            if (lyricsHidden && hasLyrics) HiddenLyrics(paneFocus, Modifier.fillMaxSize())
+        Box(modifier.onFocusChanged { hasFocus = it.hasFocus; if (!it.hasFocus) menuOpen = false }) {
+            if (lyricsHidden && hasLyrics) key(lyrics) { HiddenLyrics(Modifier.fillMaxSize()) }
             else LyricsPane(lyrics, online, position, duration, noLyricsHidden, onToggleNoLyrics, onSeek, paneFocus, Modifier.fillMaxSize())
 
-            // The "three bars" button: only while the lyric border is highlighted.
-            Box(
-                Modifier.align(Alignment.CenterEnd).padding(end = 2.dp)
+            // The "three bars" button, in the page margin just right of the lyrics box.
+            FocusSurface(
+                onClick = { menuOpen = true },
+                modifier = Modifier.align(Alignment.CenterEnd).offset(x = 42.dp).size(width = 34.dp, height = 44.dp)
                     .graphicsLayer { alpha = if (hasFocus) lyricFade.value else 0f }
-                    .size(30.dp)
-                    .focusRing(menuOpen, RoundedCornerShape(8.dp), 2.dp),
-                contentAlignment = Alignment.Center,
+                    .focusRequester(barsFocus),
+                shape = RoundedCornerShape(8.dp),
+                containerColor = Color.Transparent,
+                focusedContainerColor = Color.Transparent,
             ) {
-                Canvas(Modifier.size(width = 16.dp, height = 12.dp).breathe(OffWhite)) {
-                    val sw = size.height * 0.18f
-                    for (i in 0..2) drawLine(OffWhite, Offset(0f, size.height * i / 2f), Offset(size.width, size.height * i / 2f), sw)
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Canvas(Modifier.size(width = 16.dp, height = 12.dp)) {
+                        val sw = size.height * 0.18f
+                        for (i in 0..2) drawLine(OffWhite, Offset(0f, size.height * i / 2f), Offset(size.width, size.height * i / 2f), sw)
+                    }
                 }
             }
 
@@ -843,14 +847,15 @@ private fun LyricsArea(
                 val second = remember { FocusRequester() }
                 LaunchedEffect(Unit) { (if (hasLyrics) first else second).requestWhenReady() }
                 Column(
-                    Modifier.align(Alignment.CenterEnd).padding(end = 40.dp)
-                        .graphicsLayer { alpha = lyricFade.value.coerceAtLeast(0.35f) }
+                    Modifier.align(Alignment.CenterEnd).padding(end = 10.dp)
                         .background(Color(0xFF0B0B0B), RoundedCornerShape(14.dp))
                         .padding(8.dp)
                         .onPreviewKeyEvent { ev ->
-                            if (ev.key == Key.DirectionLeft) { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
-                            else if (ev.key == Key.DirectionRight) true
-                            else false
+                            when (ev.key) {
+                                Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
+                                Key.DirectionRight -> true
+                                else -> false
+                            }
                         },
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
@@ -872,14 +877,18 @@ private fun LyricsArea(
     }
 }
 
-/** Lyrics switched off from the menu: nothing is drawn, but the border can still be selected to reach the menu again. */
+/** Lyrics switched off from the menu: a short "Lyrics hidden" note (fades like "No lyrics found"); nothing else is drawn. */
 @Composable
-private fun HiddenLyrics(paneFocus: FocusRequester, modifier: Modifier) {
-    var focused by remember { mutableStateOf(false) }
-    Box(
-        modifier.focusRequester(paneFocus).onFocusChanged { focused = it.isFocused }
-            .focusRing(focused, RoundedCornerShape(12.dp), 2.dp).focusable()
-    )
+private fun HiddenLyrics(modifier: Modifier) {
+    val fade = remember { Animatable(1f) }
+    LaunchedEffect(Unit) {
+        fade.snapTo(1f)
+        delay(5_000)
+        fade.animateTo(0f, tween(5_000, easing = LinearEasing))
+    }
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Text("Lyrics hidden", Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim), fontSize = 20.sp, color = LyricDim)
+    }
 }
 
 @Composable
