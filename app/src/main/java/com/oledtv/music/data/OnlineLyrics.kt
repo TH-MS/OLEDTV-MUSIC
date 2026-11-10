@@ -61,7 +61,9 @@ class OnlineLyrics private constructor(context: Context) {
         return try {
             val text = fetch(artist, title, album, durSec)
             withContext(Dispatchers.IO) {
-                if (text != null) { lrc.writeText(text); none.delete() } else if (durSec > 0) none.writeText("0")
+                if (text != null) { lrc.writeText(text); none.delete() }
+                else if (durSec > 0) { none.writeText("0") }
+                Unit
             }
             val lines = text?.let { LrcParser.parse(it) }.orEmpty()
             if (lines.isNotEmpty()) OnlineResult.Found(lines, LyricsLang.looksEnglish(lines.joinToString("\n") { it.text })) else OnlineResult.NotFound
