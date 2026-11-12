@@ -278,3 +278,12 @@ class NavidromeRepository(val config: ServerConfig) {
             mapOf("id" to coverArtId, "size" to sizePx.toString()))
     }
 }
+
+
+/** True when the failure just means the server cannot be reached (off, wrong address, no network). */
+fun isUnreachable(e: Throwable): Boolean =
+    e is java.io.IOException && e !is javax.net.ssl.SSLException || (e.cause?.let { isUnreachable(it) } == true)
+
+/** Short, human wording for a failed request. */
+fun friendlyError(e: Throwable): String =
+    if (isUnreachable(e)) "Server offline / unreachable" else (e.message ?: "Network error")

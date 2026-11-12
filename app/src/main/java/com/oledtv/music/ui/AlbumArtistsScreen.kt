@@ -2,6 +2,7 @@
 
 package com.oledtv.music.ui
 
+import com.oledtv.music.data.friendlyError
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.draw.clipToBounds
@@ -339,7 +340,7 @@ fun AlbumArtistsScreen(
 
     LaunchedEffect(repo, reload) {
         if (state is Load.Err) state = Load.Loading
-        state = try { Load.Ok(repo.artists()) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(e.message ?: "Network error") }
+        state = try { Load.Ok(repo.artists()) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(friendlyError(e)) }
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {

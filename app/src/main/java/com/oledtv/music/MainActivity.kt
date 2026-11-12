@@ -2,6 +2,7 @@
 
 package com.oledtv.music
 
+import com.oledtv.music.data.isUnreachable
 import android.app.Activity
 import android.content.Context
 import android.os.SystemClock
@@ -352,17 +353,17 @@ fun ConfigScreen(
     androidx.compose.runtime.LaunchedEffect(Unit) { delay(50); first.requestSafely() }
 
     // Two columns so everything fits comfortably on a 16:9 screen: connection on the left, display options on the right.
-    Box(Modifier.fillMaxSize().padding(horizontal = 56.dp, vertical = 24.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().padding(start = 56.dp, end = 56.dp, top = 24.dp), contentAlignment = Alignment.Center) {
         Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 48.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(48.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TvTextField("Server URL", url, { url = it }, KeyboardType.Uri)
-                    TvTextField("Username", user, { user = it }, KeyboardType.Text)
-                    TvTextField("Password", pass, { pass = it }, KeyboardType.Password, password = true)
+                    TvTextField("Server URL", url, { url = it; Idle.lastInputMs = SystemClock.elapsedRealtime() }, KeyboardType.Uri)
+                    TvTextField("Username", user, { user = it; Idle.lastInputMs = SystemClock.elapsedRealtime() }, KeyboardType.Text)
+                    TvTextField("Password", pass, { pass = it; Idle.lastInputMs = SystemClock.elapsedRealtime() }, KeyboardType.Password, password = true)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     ChoiceRow("Artists per row", listOf(0 to "Auto", 4 to "4", 5 to "5", 6 to "6", 7 to "7", 8 to "8"), artistColumns, onArtistColumns, first)
@@ -377,7 +378,7 @@ fun ConfigScreen(
                                 NavidromeRepository(cfg).ping()
                                 onSaved(cfg)
                             } catch (e: CancellationException) { throw e
-                            } catch (e: Exception) { error = "Could not connect: ${e.message ?: "unknown error"}"
+                            } catch (e: Exception) { error = if (isUnreachable(e)) "Server offline / unreachable" else "Could not connect: ${e.message ?: "unknown error"}"
                             } finally { busy = false }
                         }
                     }) {

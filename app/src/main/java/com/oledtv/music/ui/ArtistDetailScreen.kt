@@ -2,6 +2,7 @@
 
 package com.oledtv.music.ui
 
+import com.oledtv.music.data.friendlyError
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -71,7 +72,7 @@ fun ArtistDetailScreen(
     LaunchedEffect(artist.id, reload) {
         if (state is Load.Err) state = Load.Loading
         // Repository sorts by year ASC (unknown last), then name.
-        state = try { Load.Ok(repo.albumsOf(artist.id)) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(e.message ?: "Network error") }
+        state = try { Load.Ok(repo.albumsOf(artist.id)) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(friendlyError(e)) }
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
@@ -165,7 +166,7 @@ fun AlbumTracklistScreen(
 
     LaunchedEffect(album.id, reload) {
         if (state is Load.Err) state = Load.Loading
-        state = try { Load.Ok(repo.songsOf(album.id)) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(e.message ?: "Network error") }
+        state = try { Load.Ok(repo.songsOf(album.id)) } catch (e: CancellationException) { throw e } catch (e: Exception) { Load.Err(friendlyError(e)) }
     }
 
     Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 27.dp)) {
