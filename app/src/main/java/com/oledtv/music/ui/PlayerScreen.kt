@@ -2,6 +2,9 @@
 
 package com.oledtv.music.ui
 
+import androidx.tv.material3.LocalTextStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.key
@@ -384,7 +387,13 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     // "Hide Lyrics" sticks while moving between songs: nothing is looked up until "Show Lyrics" is chosen.
     var lyricsHidden by remember { mutableStateOf(false) }
     var online by remember(mediaId) { mutableStateOf(Online.Idle) }
-    val lyrics by produceState<Lyrics?>(initialValue = null, mediaId, lyricsHidden) {
+    // "Refresh lyrics" (menu): swap in a different version when the current one is wrong or out of sync.
+    var refreshTick by remember(mediaId) { mutableIntStateOf(0) }
+    var refreshing by remember(mediaId) { mutableStateOf(false) }
+    var refreshNote by remember(mediaId) { mutableStateOf<String?>(null) }
+    var swapped by remember(mediaId) { mutableStateOf<Lyrics?>(null) }
+    val rejected = remember(mediaId) { HashSet<Int>() }
+    val fetched by produceState<Lyrics?>(initialValue = null, mediaId, lyricsHidden) {
         value = null
         online = Online.Idle
         if (lyricsHidden) return@produceState
@@ -418,6 +427,25 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
             OnlineResult.NotFound -> online = if (base.isEmpty) Online.NotFound else Online.Idle
             OnlineResult.Failed -> online = if (base.isEmpty) Online.Failed else Online.Idle
         }
+    }
+    val lyrics = swapped ?: fetched
+    LaunchedEffect(refreshTick) {
+        if (refreshTick == 0) return@LaunchedEffect
+        val prev = lyrics
+        prev?.synced?.takeIf { it.isNotEmpty() }?.let { rejected += OnlineLyrics.get(appContext).signature(it) }
+        refreshing = true
+        var dur = (item?.mediaMetadata?.extras?.getInt(PlaybackManager.KEY_DURATION_SEC, 0) ?: 0) * 1000L
+        if (dur <= 0) dur = player.duration.coerceAtLeast(0L)
+        when (val r = OnlineLyrics.get(appContext).refresh(artist, title, album, dur, rejected)) {
+            is OnlineResult.Found -> {
+                rejected += OnlineLyrics.get(appContext).signature(r.lines)
+                swapped = Lyrics(synced = r.lines, plain = prev?.plain)
+            }
+            OnlineResult.NotFound -> refreshNote = "No other lyrics found"
+            OnlineResult.Failed -> refreshNote = "Server offline / unreachable"
+        }
+        refreshing = false
+        if (refreshNote != null) { delay(3_000); refreshNote = null }
     }
 
     // OLED: the cover toggles the rest of the UI off/on. The cover itself always stays (and keeps pixel-shifting).
@@ -580,6 +608,9 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                     onSeek = { ms -> player.seekTo(ms); if (!player.playWhenReady) player.play() },
                     lyricsHidden = lyricsHidden,
                     trackKey = mediaId,
+                    refreshing = refreshing,
+                    refreshNote = refreshNote,
+                    onRefresh = { if (!refreshing) refreshTick++ },
                     onToggleLyricsHidden = { lyricsHidden = !lyricsHidden },
                     onHideUi = { uiVisible = false },
                     lyricFade = lyricFade,
@@ -811,13 +842,15 @@ private fun LyricsPane(
 private fun LyricsArea(
     lyrics: Lyrics?, online: Online, position: State<Long>, duration: State<Long>,
     noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit,
-    lyricsHidden: Boolean, trackKey: String, onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
+    lyricsHidden: Boolean, trackKey: String, refreshing: Boolean, refreshNote: String?, onRefresh: () -> Unit,
+    onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
     lyricFade: State<Float>, modifier: Modifier,
 ) {
     val paneFocus = remember { FocusRequester() }
     val barsFocus = remember { FocusRequester() }
     val first = remember { FocusRequester() }
     val second = remember { FocusRequester() }
+    val refreshReq = remember { FocusRequester() }
     var menuOpen by remember { mutableStateOf(false) }
     var openedAt by remember { mutableLongStateOf(0L) }
     var current by remember { mutableIntStateOf(0) }
@@ -837,7 +870,7 @@ private fun LyricsArea(
         if (menuOpen) {
             withFrameNanos { }
             delay(30)
-            try { (if (hasLyrics || lyricsHidden) first else second).requestFocus() } catch (_: IllegalStateException) { }
+            try { (if (hasLyrics || lyricsHidden) first else if (!refreshing && lyrics != null) refreshReq else second).requestFocus() } catch (_: IllegalStateException) { }
         }
     }
     BackHandler(enabled = menuOpen) { closeMenu() }
@@ -845,7 +878,13 @@ private fun LyricsArea(
     CompositionLocalProvider(LocalRingFade provides lyricFade) {
         Box(modifier.onFocusChanged { hasFocus = it.hasFocus }) {
             if (lyricsHidden) key(trackKey) { HiddenLyrics(Modifier.fillMaxSize()) }
+            else if (refreshing) CenterNote("Searching for lyrics…", Modifier.fillMaxSize())
             else LyricsPane(lyrics, online, position, duration, noLyricsHidden, onToggleNoLyrics, onSeek, paneFocus, Modifier.fillMaxSize())
+            if (refreshNote != null && !refreshing) {
+                Text(refreshNote, Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                    .background(Color(0xFF0B0B0B), RoundedCornerShape(10.dp)).padding(horizontal = 14.dp, vertical = 6.dp),
+                    fontSize = 16.sp, color = LyricDim)
+            }
 
             // The "three bars" button, in the page margin just right of the lyrics box. Highlighting it does nothing;
             // only SELECT opens the list.
@@ -870,6 +909,10 @@ private fun LyricsArea(
             }
             }
 
+            val canRefresh = !lyricsHidden && !refreshing && lyrics != null
+            val firstShown = hasLyrics || lyricsHidden
+            fun order() = buildList { if (firstShown) add(1); if (canRefresh) add(2); add(3) }
+            fun reqFor(n: Int) = when (n) { 1 -> first; 2 -> refreshReq; else -> second }
             Column(
                 Modifier.align(Alignment.CenterEnd).padding(end = 10.dp)
                     .graphicsLayer { alpha = if (menuOpen) 1f else 0f }
@@ -880,14 +923,20 @@ private fun LyricsArea(
                         when (ev.key) {
                             Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
                             Key.DirectionRight -> true
-                            Key.DirectionUp -> { if (ev.type == KeyEventType.KeyDown && current == 2 && (hasLyrics || lyricsHidden)) { try { first.requestFocus() } catch (_: IllegalStateException) { } }; true }
-                            Key.DirectionDown -> { if (ev.type == KeyEventType.KeyDown && current == 1) { try { second.requestFocus() } catch (_: IllegalStateException) { } }; true }
+                            Key.DirectionUp, Key.DirectionDown -> {
+                                if (ev.type == KeyEventType.KeyDown) {
+                                    val o = order(); val at = o.indexOf(current)
+                                    val to = o.getOrNull(if (ev.key == Key.DirectionDown) at + 1 else at - 1)
+                                    if (to != null) { try { reqFor(to).requestFocus() } catch (_: IllegalStateException) { } }
+                                }
+                                true
+                            }
                             else -> false
                         }
                     },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (hasLyrics || lyricsHidden) {
+                if (firstShown) {
                     FocusSurface(
                         onClick = { if (menuOpen && armed()) { onToggleLyricsHidden(); closeMenu() } },
                         Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(first)
@@ -900,10 +949,23 @@ private fun LyricsArea(
                         Text("No Lyrics", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
                     }
                 }
+                if (canRefresh) {
+                    FocusSurface(
+                        onClick = { if (menuOpen && armed()) { closeMenu(); onRefresh() } },
+                        Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(refreshReq)
+                            .onFocusChanged { if (it.isFocused) current = 2 },
+                    ) {
+                        Text("Refresh lyrics", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
+                    }
+                } else {
+                    Box(Modifier.width(140.dp)) {
+                        Text("Refresh lyrics", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp, color = Color(0xFF4A4A4A))
+                    }
+                }
                 FocusSurface(
                     onClick = { if (menuOpen && armed()) { closeMenu(); onHideUi() } },
                     Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(second)
-                        .onFocusChanged { if (it.isFocused) current = 2 },
+                        .onFocusChanged { if (it.isFocused) current = 3 },
                 ) {
                     Text("Hide UI", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
                 }
@@ -1047,16 +1109,35 @@ private fun SyncedLyrics(lines: List<LyricLine>, position: State<Long>, onSeek: 
         itemsIndexed(lines) { i, line ->
             val isCursor = browsing && i == cursor
             val on = i == active || isCursor
-            Text(
-                line.text,
-                modifier = Modifier
-                    .then(if (isCursor) Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(10.dp)) else Modifier)
-                    .padding(horizontal = 8.dp)
-                    .breathe(if (on) Color(0xFFF0F0F0) else LyricDim),
-                fontSize = 28.sp,
-                fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
-                color = if (on) Color(0xFFF0F0F0) else LyricDim,
-            )
+            val measurer = rememberTextMeasurer()
+            val baseStyle = LocalTextStyle.current
+            BoxWithConstraints {
+                // Bold text is wider than normal text, so a line that just fits on one row can tip over to two when it
+                // becomes the highlighted line. Measure both up front; if that would happen, the highlighted line is
+                // set a few % smaller (just enough to stay on one row). Lines that already wrap are left alone.
+                val availPx = with(density) { (maxWidth - 16.dp).roundToPx() }
+                val boldSize = remember(line.text, availPx) {
+                    val c = androidx.compose.ui.unit.Constraints(maxWidth = availPx)
+                    fun lines(size: Float, w: FontWeight) = measurer.measure(
+                        line.text, baseStyle.merge(TextStyle(fontSize = size.sp, fontWeight = w)), constraints = c,
+                    ).lineCount
+                    var size = 28f
+                    if (lines(28f, FontWeight.Normal) == 1) {
+                        while (size > 22f && lines(size, FontWeight.Bold) > 1) size -= 0.5f
+                    }
+                    size
+                }
+                Text(
+                    line.text,
+                    modifier = Modifier
+                        .then(if (isCursor) Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(10.dp)) else Modifier)
+                        .padding(horizontal = 8.dp)
+                        .breathe(if (on) Color(0xFFF0F0F0) else LyricDim),
+                    fontSize = if (on) boldSize.sp else 28.sp,
+                    fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                    color = if (on) Color(0xFFF0F0F0) else LyricDim,
+                )
+            }
         }
     }
 }

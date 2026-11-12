@@ -108,8 +108,77 @@ class OnlineLyrics private constructor(context: Context) {
         return (cands.filter { it.english }.minByOrNull { it.diff } ?: cands.minByOrNull { it.diff })?.text
     }
 
-    private suspend fun call(url: String): Response = suspendCancellableCoroutine { cont ->
-        val c = http.newCall(Request.Builder().url(url).header("User-Agent", UA).build())
+    /** Stable fingerprint of a lyric set (used to avoid offering the same version twice). */
+    fun signature(lines: List<LyricLine>): Int = lines.joinToString("\n") { "${it.timeMs}|${it.text}" }.hashCode()
+
+    /**
+     * "Refresh lyrics": looks for a DIFFERENT version than those already shown (`exclude` = their signatures).
+     * Sources, in order of preference: every other length-matched LRCLIB version, then NetEase Cloud Music.
+     * English versions win; the chosen one replaces the saved copy, so it is used from then on.
+     */
+    suspend fun refresh(artist: String, title: String, album: String, durationMs: Long, exclude: Set<Int>): OnlineResult {
+        val durSec = (durationMs / 1000).toInt()
+        data class C(val lines: List<LyricLine>, val raw: String, val diff: Double, val english: Boolean)
+        val all = ArrayList<C>()
+        fun add(raw: String, diff: Double) {
+            val lines = LrcParser.parse(raw)
+            if (lines.size < 4 || signature(lines) in exclude) return
+            all += C(lines, raw, diff, LyricsLang.looksEnglish(lines.joinToString("\n") { it.text }))
+        }
+        var anySuccess = false
+        try {
+            fun lr(o: com.google.gson.JsonObject) {
+                val sl = o.get("syncedLyrics")?.takeIf { !it.isJsonNull }?.asString ?: return
+                val d = o.get("duration")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                val diff = if (durSec > 0 && d > 0) kotlin.math.abs(d - durSec) else 0.0
+                if (durSec > 0 && d > 0 && diff > DUR_TOLERANCE) return
+                add(sl, diff)
+            }
+            val get = "https://lrclib.net/api/get".toHttpUrl().newBuilder()
+                .addQueryParameter("artist_name", artist).addQueryParameter("track_name", title)
+                .apply { if (album.isNotBlank()) addQueryParameter("album_name", album) }
+                .apply { if (durSec > 0) addQueryParameter("duration", durSec.toString()) }.build()
+            call(get.toString()).use { r -> if (r.isSuccessful) { anySuccess = true; lr(JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject) } }
+            val search = "https://lrclib.net/api/search".toHttpUrl().newBuilder()
+                .addQueryParameter("track_name", title).addQueryParameter("artist_name", artist).build()
+            call(search.toString()).use { r -> if (r.isSuccessful) { anySuccess = true; for (e in JsonParser.parseString(r.body?.string().orEmpty()).asJsonArray) lr(e.asJsonObject) } }
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+
+        // Second source: NetEase Cloud Music (best effort; any failure is simply ignored).
+        try {
+            val q = "https://music.163.com/api/search/get".toHttpUrl().newBuilder()
+                .addQueryParameter("s", "$artist $title").addQueryParameter("type", "1").addQueryParameter("limit", "6").build()
+            val ids = ArrayList<Long>()
+            call(q.toString(), referer = "https://music.163.com/").use { r ->
+                if (r.isSuccessful) {
+                    anySuccess = true
+                    val songs = JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject.getAsJsonObject("result")?.getAsJsonArray("songs")
+                    if (songs != null) for (e in songs) {
+                        val o = e.asJsonObject
+                        val d = (o.get("duration")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0) / 1000.0
+                        if (durSec > 0 && d > 0 && kotlin.math.abs(d - durSec) > DUR_TOLERANCE) continue
+                        ids += o.get("id").asLong
+                    }
+                }
+            }
+            for (id in ids.take(3)) {
+                call("https://music.163.com/api/song/lyric?id=$id&lv=1", referer = "https://music.163.com/").use { r ->
+                    if (r.isSuccessful) {
+                        val raw = JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject.getAsJsonObject("lrc")?.get("lyric")?.takeIf { !it.isJsonNull }?.asString
+                        if (!raw.isNullOrBlank()) add(raw, 1.5)
+                    }
+                }
+            }
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+
+        val best = all.filter { it.english }.minByOrNull { it.diff } ?: all.minByOrNull { it.diff }
+        if (best == null) return if (anySuccess) OnlineResult.NotFound else OnlineResult.Failed
+        withContext(Dispatchers.IO) { File(dir, "${key(artist, title, album, durSec)}.lrc").writeText(best.raw) }
+        return OnlineResult.Found(best.lines, best.english)
+    }
+
+    private suspend fun call(url: String, referer: String? = null): Response = suspendCancellableCoroutine { cont ->
+        val c = http.newCall(Request.Builder().url(url).header("User-Agent", UA).apply { if (referer != null) header("Referer", referer) }.build())
         cont.invokeOnCancellation { c.cancel() }
         c.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) { if (cont.isActive) cont.resumeWithException(e) }
