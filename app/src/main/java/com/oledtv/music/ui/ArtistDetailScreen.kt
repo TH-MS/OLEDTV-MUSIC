@@ -278,7 +278,7 @@ private fun TrackList(
 
     Box(
         Modifier.fillMaxSize()
-            .onFocusChanged { hasFocus = it.hasFocus; if (!it.hasFocus) menuOpen = false }
+            .onFocusChanged { hasFocus = it.hasFocus }
             .onPreviewKeyEvent { ev ->
                 // From a row, RIGHT goes straight to the 3-bar button (it sits outside the list).
                 if (!menuOpen && ev.key == Key.DirectionRight && ev.type == KeyEventType.KeyDown) {
