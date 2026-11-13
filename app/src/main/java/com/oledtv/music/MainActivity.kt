@@ -107,6 +107,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("show_track_artist", false)
         set(v) { sp.edit().putBoolean("show_track_artist", v).apply() }
 
+    /** Auto mode: show track artists only on albums where some track's artist differs from the album artist. */
+    var autoTrackArtist: Boolean
+        get() = sp.getBoolean("auto_track_artist", false)
+        set(v) { sp.edit().putBoolean("auto_track_artist", v).apply() }
+
     var artistColumns: Int
         get() = sp.getInt("artist_columns", 0)
         set(v) { sp.edit().putInt("artist_columns", v).apply() }
@@ -178,6 +183,7 @@ fun OledApp(prefs: Prefs) {
     var albumColumns by remember { mutableIntStateOf(prefs.gridColumns) }
     var artistColumns by remember { mutableIntStateOf(prefs.artistColumns) }
     var showTrackArtist by remember { mutableStateOf(prefs.showTrackArtist) }
+    var autoTrackArtist by remember { mutableStateOf(prefs.autoTrackArtist) }
     val repo = remember(config) { config?.let { NavidromeRepository(it) } }
     val stack = remember { mutableStateListOf<Screen>(if (prefs.load() == null) Screen.Config else Screen.Artists()) }
 
@@ -269,6 +275,7 @@ fun OledApp(prefs: Prefs) {
                     repo = repo, albums = screen.albums, albumIndex = screen.index,
                     listState = screen.list, lastIndex = screen.last, playingSongId = manager.nowSongId,
                     showArtist = showTrackArtist, onShowArtist = { showTrackArtist = it; prefs.showTrackArtist = it },
+                    autoArtist = autoTrackArtist, onAutoArtist = { autoTrackArtist = it; prefs.autoTrackArtist = it },
                     onPlay = { songs, start ->
                         // Selecting the song that is already playing just opens Now Playing: no restart.
                         val alreadyPlaying = manager.nowSongId != null && manager.nowSongId == songs.getOrNull(start)?.id

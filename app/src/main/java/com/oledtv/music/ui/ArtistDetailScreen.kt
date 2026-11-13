@@ -185,6 +185,8 @@ fun AlbumTracklistScreen(
     playingSongId: String?,
     showArtist: Boolean,
     onShowArtist: (Boolean) -> Unit,
+    autoArtist: Boolean,
+    onAutoArtist: (Boolean) -> Unit,
     onPlay: (songs: List<SongDto>, startIndex: Int) -> Unit,
 ) {
     val album = albums[albumIndex]
@@ -220,7 +222,7 @@ fun AlbumTracklistScreen(
             when (val s = state) {
                 is Load.Loading -> LoadingPane("Loading tracks…")
                 is Load.Err -> StatusPane(s.message) { reload++ }
-                is Load.Ok -> TrackList(s.value, listState, lastIndex, onPlay, playingSongId, showArtist, onShowArtist)
+                is Load.Ok -> TrackList(s.value, album.artist, listState, lastIndex, onPlay, playingSongId, showArtist, onShowArtist, autoArtist, onAutoArtist)
             }
         }
     }
@@ -229,12 +231,15 @@ fun AlbumTracklistScreen(
 @Composable
 private fun TrackList(
     songs: List<SongDto>,
+    albumArtist: String?,
     listState: LazyListState,
     lastIndex: MutableIntState,
     onPlay: (List<SongDto>, Int) -> Unit,
     playingSongId: String?,
-    showArtist: Boolean,
-    onShowArtist: (Boolean) -> Unit,
+    manualShow: Boolean,
+    onManualShow: (Boolean) -> Unit,
+    auto: Boolean,
+    onAuto: (Boolean) -> Unit,
 ) {
     if (songs.isEmpty()) { StatusPane("This album has no tracks."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, songs.lastIndex) }
@@ -246,12 +251,20 @@ private fun TrackList(
     fun reqFor(i: Int) = rowReqs.getOrPut(i) { FocusRequester() }
     val barsFocus = remember { FocusRequester() }
     val itemFocus = remember { FocusRequester() }
+    val autoFocus = remember { FocusRequester() }
+    var current by remember { mutableIntStateOf(1) }
     var menuOpen by remember { mutableStateOf(false) }
     var openedAt by remember { mutableLongStateOf(0L) }
     var hasFocus by remember { mutableStateOf(false) }
     val barsHasFocus = remember { mutableStateOf(false) }
 
     // Show/hide transition: one 0..1 progress, read only in layout/draw (no recomposition per frame).
+    // Auto mode: if even one track's artist differs from the album artist, every track shows its artist;
+    // if all match exactly, nothing extra is shown. Auto off: the manual Show/Hide choice applies.
+    val autoShow = remember(songs, albumArtist) {
+        !albumArtist.isNullOrBlank() && songs.any { !it.artist.isNullOrBlank() && it.artist != albumArtist }
+    }
+    val showArtist = if (auto) autoShow else manualShow
     val p = animateFloatAsState(if (showArtist) 1f else 0f, tween(170, easing = FastOutSlowInEasing), label = "artistP")
 
     // Row height is fixed to exactly what a single-line row is today, so both states occupy identical boxes.
@@ -394,16 +407,33 @@ private fun TrackList(
                     if (!menuOpen) return@onPreviewKeyEvent false
                     when (ev.key) {
                         Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
-                        Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> true
+                        Key.DirectionRight -> true
+                        Key.DirectionUp, Key.DirectionDown -> {
+                            if (ev.type == KeyEventType.KeyDown) {
+                                val to = if (ev.key == Key.DirectionDown) 2 else 1
+                                if (to != current) { try { (if (to == 1) itemFocus else autoFocus).requestFocus() } catch (_: IllegalStateException) { } }
+                            }
+                            true
+                        }
                         else -> false
                     }
                 },
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            // Choosing Show/Hide is a manual choice: it switches Auto off (the last choice made always wins).
             FocusSurface(
-                onClick = { if (menuOpen && armed()) { onShowArtist(!showArtist); closeMenu() } },
-                Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(itemFocus),
+                onClick = { if (menuOpen && armed()) { onManualShow(!showArtist); onAuto(false); closeMenu() } },
+                Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(itemFocus)
+                    .onFocusChanged { if (it.isFocused) current = 1 },
             ) {
                 Text(if (showArtist) "Hide Artist" else "Show Artist", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
+            }
+            FocusSurface(
+                onClick = { if (menuOpen && armed()) { onAuto(!auto); closeMenu() } },
+                Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(autoFocus)
+                    .onFocusChanged { if (it.isFocused) current = 2 },
+            ) {
+                Text(if (auto) "Auto off" else "Auto on", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
             }
         }
     }

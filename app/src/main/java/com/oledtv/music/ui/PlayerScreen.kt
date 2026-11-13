@@ -534,6 +534,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
     }
 
     val playFocus = remember { FocusRequester() }
+    val shuffleFocus = remember { FocusRequester() }
     val coverFocus = remember { FocusRequester() }
     LaunchedEffect(uiVisible) {
         delay(50)
@@ -594,7 +595,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                         }
                         ControlButton(if (playWhenReady) Glyph.Pause else Glyph.Play, Modifier.focusRequester(playFocus), onClick = togglePlay)
                         ControlButton(Glyph.Next) { if (player.hasNextMediaItem()) player.seekToNextMediaItem() }
-                        ControlButton(Glyph.Shuffle, active = manager.shuffled) { manager.toggleShuffleCurrentAlbum() }
+                        ControlButton(Glyph.Shuffle, Modifier.focusRequester(shuffleFocus), active = manager.shuffled) { manager.toggleShuffleCurrentAlbum() }
                     }
                 }
             }
@@ -603,6 +604,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                 // ── Right ~55%
                 LyricsArea(
                     lyrics, online, position, duration,
+                    onLeaveLeft = { try { shuffleFocus.requestFocus() } catch (_: IllegalStateException) { } },
                     noLyricsHidden = noLyricsHidden,
                     onToggleNoLyrics = { noLyricsHidden = !noLyricsHidden },
                     onSeek = { ms -> player.seekTo(ms); if (!player.playWhenReady) player.play() },
@@ -841,6 +843,7 @@ private fun LyricsPane(
 @Composable
 private fun LyricsArea(
     lyrics: Lyrics?, online: Online, position: State<Long>, duration: State<Long>,
+    onLeaveLeft: () -> Unit,
     noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit,
     lyricsHidden: Boolean, trackKey: String, refreshing: Boolean, refreshNote: String?, onRefresh: () -> Unit,
     onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
@@ -855,6 +858,7 @@ private fun LyricsArea(
     var openedAt by remember { mutableLongStateOf(0L) }
     var current by remember { mutableIntStateOf(0) }
     var hasFocus by remember { mutableStateOf(false) }
+    var barsHasFocus by remember { mutableStateOf(false) }
     val hasLyrics = lyrics != null && !lyrics.isEmpty
 
     // The menu items stay composed (just invisible and unfocusable while closed), so opening and closing never has to
@@ -876,7 +880,18 @@ private fun LyricsArea(
     BackHandler(enabled = menuOpen) { closeMenu() }
 
     CompositionLocalProvider(LocalRingFade provides lyricFade) {
-        Box(modifier.onFocusChanged { hasFocus = it.hasFocus }) {
+        Box(
+            modifier
+                .onFocusChanged { hasFocus = it.hasFocus }
+                .onPreviewKeyEvent { ev ->
+                    // LEFT from the lyrics box must never land on the progress bar (a stray press could shift the
+                    // song position). It always goes to the Shuffle button instead.
+                    if (ev.key == Key.DirectionLeft && hasFocus && !menuOpen && !barsHasFocus) {
+                        if (ev.type == KeyEventType.KeyDown) onLeaveLeft()
+                        true
+                    } else false
+                },
+        ) {
             if (lyricsHidden) key(trackKey) { HiddenLyrics(Modifier.fillMaxSize()) }
             else if (refreshing) CenterNote("Searching for lyrics…", Modifier.fillMaxSize())
             else LyricsPane(lyrics, online, position, duration, noLyricsHidden, onToggleNoLyrics, onSeek, paneFocus, Modifier.fillMaxSize())
@@ -895,7 +910,7 @@ private fun LyricsArea(
             ) {
             FocusSurface(
                 onClick = { openedAt = android.os.SystemClock.uptimeMillis(); menuOpen = true },
-                modifier = Modifier.size(width = 34.dp, height = 44.dp).focusRequester(barsFocus),
+                modifier = Modifier.size(width = 34.dp, height = 44.dp).focusRequester(barsFocus).onFocusChanged { barsHasFocus = it.isFocused },
                 shape = RoundedCornerShape(8.dp),
                 containerColor = Color.Transparent,
                 focusedContainerColor = Color.Transparent,
