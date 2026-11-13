@@ -183,10 +183,6 @@ fun AlbumTracklistScreen(
     listState: LazyListState,
     lastIndex: MutableIntState,
     playingSongId: String?,
-    showArtist: Boolean,
-    onShowArtist: (Boolean) -> Unit,
-    autoArtist: Boolean,
-    onAutoArtist: (Boolean) -> Unit,
     onPlay: (songs: List<SongDto>, startIndex: Int) -> Unit,
 ) {
     val album = albums[albumIndex]
@@ -222,7 +218,7 @@ fun AlbumTracklistScreen(
             when (val s = state) {
                 is Load.Loading -> LoadingPane("Loading tracks…")
                 is Load.Err -> StatusPane(s.message) { reload++ }
-                is Load.Ok -> TrackList(s.value, album.artist, listState, lastIndex, onPlay, playingSongId, showArtist, onShowArtist, autoArtist, onAutoArtist)
+                is Load.Ok -> TrackList(s.value, album.artist, listState, lastIndex, onPlay, playingSongId)
             }
         }
     }
@@ -236,35 +232,20 @@ private fun TrackList(
     lastIndex: MutableIntState,
     onPlay: (List<SongDto>, Int) -> Unit,
     playingSongId: String?,
-    manualShow: Boolean,
-    onManualShow: (Boolean) -> Unit,
-    auto: Boolean,
-    onAuto: (Boolean) -> Unit,
 ) {
     if (songs.isEmpty()) { StatusPane("This album has no tracks."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, songs.lastIndex) }
     // Disc labels appear only if the album really has 2+ discs (a lone "Disc 1" is never shown).
     val multiDisc = remember(songs) { songs.map { it.discNumber ?: 1 }.distinct().size > 1 }
 
-    // One focus requester per row (so focus can come back to the row you were on), plus the 3-bar button / menu.
-    val rowReqs = remember(songs) { HashMap<Int, FocusRequester>() }
-    fun reqFor(i: Int) = rowReqs.getOrPut(i) { FocusRequester() }
-    val barsFocus = remember { FocusRequester() }
-    val itemFocus = remember { FocusRequester() }
-    val autoFocus = remember { FocusRequester() }
-    var current by remember { mutableIntStateOf(1) }
-    var menuOpen by remember { mutableStateOf(false) }
-    var openedAt by remember { mutableLongStateOf(0L) }
-    var hasFocus by remember { mutableStateOf(false) }
-    val barsHasFocus = remember { mutableStateOf(false) }
+    val startFocus = remember { FocusRequester() }
 
     // Show/hide transition: one 0..1 progress, read only in layout/draw (no recomposition per frame).
-    // Auto mode: if even one track's artist differs from the album artist, every track shows its artist;
-    // if all match exactly, nothing extra is shown. Auto off: the manual Show/Hide choice applies.
-    val autoShow = remember(songs, albumArtist) {
+    // Always automatic: if even one track's artist differs from the album artist, every track shows its artist
+    // (those that match the album artist are shown dimmer, as they are mostly redundant); if all match, nothing extra.
+    val showArtist = remember(songs, albumArtist) {
         !albumArtist.isNullOrBlank() && songs.any { !it.artist.isNullOrBlank() && it.artist != albumArtist }
     }
-    val showArtist = if (auto) autoShow else manualShow
     val p = animateFloatAsState(if (showArtist) 1f else 0f, tween(170, easing = FastOutSlowInEasing), label = "artistP")
 
     // Row height is fixed to exactly what a single-line row is today, so both states occupy identical boxes.
@@ -275,31 +256,7 @@ private fun TrackList(
         with(density) { measurer.measure("Ag", baseStyle.merge(TextStyle(fontSize = 20.sp))).size.height.toDp() } + 24.dp
     }
 
-    val closeMenu: () -> Unit = {
-        try { barsFocus.requestFocus() } catch (_: IllegalStateException) { }
-        menuOpen = false
-    }
-    fun armed() = android.os.SystemClock.uptimeMillis() - openedAt > 400
-    LaunchedEffect(menuOpen) {
-        if (menuOpen) {
-            withFrameNanos { }
-            delay(30)
-            try { itemFocus.requestFocus() } catch (_: IllegalStateException) { }
-        }
-    }
-    BackHandler(enabled = menuOpen) { closeMenu() }
-
-    Box(
-        Modifier.fillMaxSize()
-            .onFocusChanged { hasFocus = it.hasFocus }
-            .onPreviewKeyEvent { ev ->
-                // From a row, RIGHT goes straight to the 3-bar button (it sits outside the list).
-                if (!menuOpen && ev.key == Key.DirectionRight && ev.type == KeyEventType.KeyDown) {
-                    if (!barsHasFocus.value) { try { barsFocus.requestFocus() } catch (_: IllegalStateException) { }; return@onPreviewKeyEvent true }
-                }
-                false
-            },
-    ) {
+    run {
         LazyColumn(
             state = listState,
             // 28 dp side padding: a focused row scales up ~4% and must stay clear of the cover.
@@ -325,7 +282,7 @@ private fun TrackList(
                         playing = song.id == playingSongId,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .focusRequester(reqFor(i))
+                            .then(if (i == startIndex) Modifier.focusRequester(startFocus) else Modifier)
                             .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i },
                     ) {
                         Row(Modifier.fillMaxWidth().height(rowH).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -348,6 +305,7 @@ private fun TrackList(
                                 )
                                 // ... artist: small and dim, sliding/fading in underneath.
                                 if (hasArtist) {
+                                    val redundant = song.artist == albumArtist
                                     Text(
                                         song.artist.orEmpty(),
                                         Modifier
@@ -357,7 +315,7 @@ private fun TrackList(
                                                 layout(pl.width, h) { pl.placeRelative(0, 0) }
                                             }
                                             .graphicsLayer { alpha = rowP() },
-                                        fontSize = 12.sp, color = Color(0xFF7E7E7E), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        fontSize = 12.sp, color = if (redundant) Color(0xFF4C4C4C) else Color(0xFF7E7E7E), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }
@@ -368,78 +326,10 @@ private fun TrackList(
             }
         }
 
-        // ── 3-bar button: in the page margin, completely clear of the widest (focused) row. ──
-        Box(
-            Modifier.align(Alignment.CenterEnd).offset(x = 42.dp).size(width = 50.dp, height = 62.dp)
-                .graphicsLayer { alpha = if (hasFocus) 1f else 0f },
-            contentAlignment = Alignment.Center,
-        ) {
-            FocusSurface(
-                onClick = { openedAt = android.os.SystemClock.uptimeMillis(); menuOpen = true },
-                modifier = Modifier.size(width = 34.dp, height = 44.dp).focusRequester(barsFocus)
-                    .onFocusChanged { barsHasFocus.value = it.isFocused }
-                    .onPreviewKeyEvent { ev ->
-                        if (ev.key == Key.DirectionLeft && ev.type == KeyEventType.KeyDown) {
-                            try { reqFor(lastIndex.intValue.coerceIn(0, songs.lastIndex)).requestFocus() } catch (_: IllegalStateException) { }
-                            true
-                        } else false
-                    },
-                shape = RoundedCornerShape(8.dp),
-                containerColor = Color.Transparent,
-                focusedContainerColor = Color.Transparent,
-            ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Canvas(Modifier.size(width = 16.dp, height = 12.dp)) {
-                        val sw = size.height * 0.18f
-                        for (i in 0..2) drawLine(Color(0xFFF0F0F0), Offset(0f, size.height * i / 2f), Offset(size.width, size.height * i / 2f), sw)
-                    }
-                }
-            }
-        }
-
-        // ── The menu (always composed; only visible/focusable while open). ──
-        Column(
-            Modifier.align(Alignment.CenterEnd).padding(end = 38.dp)
-                .graphicsLayer { alpha = if (menuOpen) 1f else 0f }
-                .background(Color(0xFF0B0B0B), RoundedCornerShape(14.dp))
-                .padding(8.dp)
-                .onPreviewKeyEvent { ev ->
-                    if (!menuOpen) return@onPreviewKeyEvent false
-                    when (ev.key) {
-                        Key.DirectionLeft -> { if (ev.type == KeyEventType.KeyDown) closeMenu(); true }
-                        Key.DirectionRight -> true
-                        Key.DirectionUp, Key.DirectionDown -> {
-                            if (ev.type == KeyEventType.KeyDown) {
-                                val to = if (ev.key == Key.DirectionDown) 2 else 1
-                                if (to != current) { try { (if (to == 1) itemFocus else autoFocus).requestFocus() } catch (_: IllegalStateException) { } }
-                            }
-                            true
-                        }
-                        else -> false
-                    }
-                },
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            // Choosing Show/Hide is a manual choice: it switches Auto off (the last choice made always wins).
-            FocusSurface(
-                onClick = { if (menuOpen && armed()) { onManualShow(!showArtist); onAuto(false); closeMenu() } },
-                Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(itemFocus)
-                    .onFocusChanged { if (it.isFocused) current = 1 },
-            ) {
-                Text(if (showArtist) "Hide Artist" else "Show Artist", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
-            }
-            FocusSurface(
-                onClick = { if (menuOpen && armed()) { onAuto(!auto); closeMenu() } },
-                Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(autoFocus)
-                    .onFocusChanged { if (it.isFocused) current = 2 },
-            ) {
-                Text(if (auto) "Auto off" else "Auto on", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
-            }
-        }
     }
 
     LaunchedEffect(songs) {
         listState.scrollToItem(startIndex)
-        reqFor(startIndex).requestWhenReady()
+        startFocus.requestWhenReady()
     }
 }
