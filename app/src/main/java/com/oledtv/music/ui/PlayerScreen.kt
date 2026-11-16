@@ -770,9 +770,10 @@ private fun ProgressRow(
     val pos = scrub ?: position.value
     val frac = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
     val barHeight = if (focused) 8.dp else 4.dp
-    // Thin, non-interactive marker where the synced lyrics begin: fades in, and fades out once playback passes it.
+    // Thin, non-interactive marker where the synced lyrics begin: same height and colour as the played bar, fades in,
+    // and simply merges into the played bar when playback reaches it.
     val markerAlpha = animateFloatAsState(
-        if (lyricStartMs != null && dur > 0 && pos < lyricStartMs) 1f else 0f, tween(700), label = "lyricMarker",
+        if (lyricStartMs != null && dur > 0) 1f else 0f, tween(700), label = "lyricMarker",
     )
 
     Column(
@@ -814,7 +815,7 @@ private fun ProgressRow(
             Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))
             if (lyricStartMs != null && dur > 0) {
                 Box(Modifier.fillMaxWidth((lyricStartMs.toFloat() / dur).coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
-                    Box(Modifier.width(2.dp).height(16.dp).graphicsLayer { alpha = markerAlpha.value }.background(Color(0xFF2A2A2A)))
+                    Box(Modifier.width(2.dp).height(barHeight).graphicsLayer { alpha = markerAlpha.value }.breathe(OffWhite).background(OffWhite))
                 }
             }
             Box(Modifier.fillMaxWidth(frac).height(barHeight).breathe(OffWhite).background(OffWhite, RoundedCornerShape(4.dp)))
