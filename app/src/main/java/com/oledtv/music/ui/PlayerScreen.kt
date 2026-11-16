@@ -815,7 +815,7 @@ private fun ProgressRow(
             Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))
             if (lyricStartMs != null && dur > 0) {
                 Box(Modifier.fillMaxWidth((lyricStartMs.toFloat() / dur).coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
-                    Box(Modifier.width(2.dp).height(barHeight).graphicsLayer { alpha = markerAlpha.value }.breathe(OffWhite).background(OffWhite))
+                    Box(Modifier.width(2.dp).height(barHeight).graphicsLayer { alpha = if (lyricStartMs != null && (scrub ?: position.value) >= lyricStartMs) 0f else markerAlpha.value }.breathe(OffWhite).background(OffWhite))
                 }
             }
             Box(Modifier.fillMaxWidth(frac).height(barHeight).breathe(OffWhite).background(OffWhite, RoundedCornerShape(4.dp)))

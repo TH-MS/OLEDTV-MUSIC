@@ -245,6 +245,7 @@ private fun TrackList(
     val startIndex = remember { lastIndex.intValue.coerceIn(0, songs.lastIndex) }
     // Disc labels appear only if the album really has 2+ discs (a lone "Disc 1" is never shown).
     val multiDisc = remember(songs) { songs.map { it.discNumber ?: 1 }.distinct().size > 1 }
+    val discTotal = remember(songs) { songs.maxOf { it.discNumber ?: 1 } }
 
     val startFocus = remember { FocusRequester() }
 
@@ -283,7 +284,7 @@ private fun TrackList(
                 Column {
                     if (firstOfDisc) {
                         Text(
-                            "Disc $disc",
+                            "Disc $disc of $discTotal",
                             Modifier.padding(start = 20.dp, top = if (i == 0) 0.dp else 14.dp, bottom = 6.dp),
                             fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color(0xFF9A9A9A),
                         )
