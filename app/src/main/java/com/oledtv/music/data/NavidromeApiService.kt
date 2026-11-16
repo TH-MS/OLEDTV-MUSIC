@@ -55,6 +55,8 @@ data class SubsonicResponse<T>(@SerializedName("subsonic-response") val response
 data class PingBody(override val status: String?, override val error: SubsonicError?) : SubsonicBody
 
 data class ArtistsBody(override val status: String?, override val error: SubsonicError?, val artists: ArtistsDto?) : SubsonicBody
+data class ScanBody(override val status: String?, override val error: SubsonicError?, val scanStatus: ScanDto?) : SubsonicBody
+data class ScanDto(val scanning: Boolean?, val count: Long?)
 data class ArtistsDto(val index: List<IndexDto>?)
 data class IndexDto(val name: String?, val artist: List<ArtistDto>?)
 data class ArtistDto(val id: String, val name: String, val albumCount: Int?, val coverArt: String?)
@@ -92,6 +94,8 @@ interface NavidromeApiService {
 
     /** Navidrome returns Album Artists here. */
     @GET("rest/getArtists.view") suspend fun getArtists(): SubsonicResponse<ArtistsBody>
+    @GET("rest/startScan.view") suspend fun startScan(): SubsonicResponse<ScanBody>
+    @GET("rest/getScanStatus.view") suspend fun getScanStatus(): SubsonicResponse<ScanBody>
 
     @GET("rest/getArtist.view") suspend fun getArtist(@Query("id") id: String): SubsonicResponse<ArtistBody>
 
@@ -193,6 +197,40 @@ class NavidromeRepository(val config: ServerConfig) {
     }
 
     suspend fun ping() { api.ping().unwrap() }
+
+    /**
+     * Asks the server to look for new files (needs permission on the server; if refused we still re-read what it
+     * already has), waits for the scan to finish, then drops every cache. Returns a short status message.
+     */
+    suspend fun refreshLibrary(): String {
+        val before = artistsCache?.size ?: api.getArtists().unwrap().artists?.index.orEmpty().sumOf { it.artist.orEmpty().size }
+        var scanned = false
+        var beforeCount: Long? = null
+        var afterCount: Long? = null
+        try {
+            beforeCount = api.getScanStatus().unwrap().scanStatus?.count
+            api.startScan().unwrap()
+            scanned = true
+            for (i in 0 until 120) {
+                kotlinx.coroutines.delay(1_000)
+                val st = api.getScanStatus().unwrap().scanStatus
+                afterCount = st?.count
+                if (st?.scanning != true) break
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: IOException) { if (!scanned && isUnreachable(e)) throw e }
+        artistsCache = null; albumsCache.clear(); songsCache.clear()
+        val now = artists().size
+        val bc = beforeCount
+        val ac = afterCount
+        val added = if (bc != null && ac != null) ac - bc else 0L
+        return when {
+            added > 0 -> "Found $added new file(s) - library updated"
+            now != before -> "Library updated (${now - before} new artist(s))"
+            scanned -> "No new music found"
+            else -> "Library reloaded (server did not allow a scan)"
+        }
+    }
 
     /** Album Artists only, alphabetical. */
     suspend fun artists(): List<ArtistDto> {

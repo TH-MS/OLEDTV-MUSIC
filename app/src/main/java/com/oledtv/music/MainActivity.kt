@@ -146,6 +146,22 @@ class MainActivity : ComponentActivity() {
             if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) PlaybackManager.get(this).togglePlayPause()
             return true
         }
+        // Remote's track buttons (Next/Fast-forward, Previous/Rewind): same behaviour as Spotify / Apple Music.
+        // Previous: more than 3 s in (or first track) restarts the song; pressed again it goes to the previous track.
+        val kc = event.keyCode
+        val isNext = kc == android.view.KeyEvent.KEYCODE_MEDIA_NEXT || kc == android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD || kc == android.view.KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD
+        val isPrev = kc == android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS || kc == android.view.KeyEvent.KEYCODE_MEDIA_REWIND || kc == android.view.KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD
+        if (isNext || isPrev) {
+            val m = PlaybackManager.get(this)
+            if (!m.hasQueue) return super.dispatchKeyEvent(event)
+            if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                val pl = m.player
+                if (isNext) { if (pl.hasNextMediaItem()) pl.seekToNextMediaItem() }
+                else if (pl.currentPosition > 3_000 || !pl.hasPreviousMediaItem()) pl.seekTo(0)
+                else pl.seekToPreviousMediaItem()
+            }
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 }
@@ -236,6 +252,7 @@ fun OledApp(prefs: Prefs) {
             if (screen is Screen.Config || repo == null) {
                 ConfigScreen(
                     initial = config,
+                    repo = repo,
                     artistColumns = artistColumns,
                     onArtistColumns = { artistColumns = it; prefs.artistColumns = it },
                     albumColumns = albumColumns,
@@ -337,6 +354,7 @@ fun BouncingTitle() {
 @Composable
 fun ConfigScreen(
     initial: ServerConfig?,
+    repo: NavidromeRepository?,
     artistColumns: Int,
     onArtistColumns: (Int) -> Unit,
     albumColumns: Int,
@@ -348,6 +366,8 @@ fun ConfigScreen(
     var pass by remember { mutableStateOf(initial?.password.orEmpty()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
+    var refreshNote by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val first = remember { FocusRequester() }
     androidx.compose.runtime.LaunchedEffect(Unit) { delay(50); first.requestSafely() }
@@ -368,6 +388,21 @@ fun ConfigScreen(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     ChoiceRow("Artists per row", listOf(0 to "Auto", 4 to "4", 5 to "5", 6 to "6", 7 to "7", 8 to "8"), artistColumns, onArtistColumns, first)
                     ChoiceRow("Albums per row", listOf(0 to "Auto", 3 to "3", 4 to "4", 5 to "5", 6 to "6"), albumColumns, onAlbumColumns)
+                    if (repo != null) {
+                        FocusSurface(onClick = {
+                            if (refreshing) return@FocusSurface
+                            refreshing = true; refreshNote = null
+                            scope.launch {
+                                refreshNote = try { repo.refreshLibrary() }
+                                catch (e: CancellationException) { throw e }
+                                catch (e: Exception) { if (isUnreachable(e)) "Server offline / unreachable" else "Refresh failed: ${e.message ?: "unknown error"}" }
+                                finally { refreshing = false }
+                            }
+                        }) {
+                            Text(if (refreshing) "Checking server…" else "Refresh library", Modifier.padding(horizontal = 26.dp, vertical = 12.dp), fontSize = 19.sp)
+                        }
+                        refreshNote?.let { Text(it, color = Color(0xFFBBBBBB), fontSize = 15.sp) }
+                    }
                     error?.let { Text(it, color = Color(0xFFFF6B6B), fontSize = 15.sp) }
                     FocusSurface(onClick = {
                         if (busy || url.isBlank() || user.isBlank()) return@FocusSurface

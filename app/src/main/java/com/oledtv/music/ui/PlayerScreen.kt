@@ -554,6 +554,13 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
             Column(Modifier.weight(0.45f).fillMaxHeight()) {
                 // Text, progress bar and buttons are measured first; the cover takes whatever height is left,
                 // so long titles shrink the cover instead of pushing the controls off-screen (any 16:9 size).
+                // OLED care: the cover's brightness drifts very slowly between 100% and 85% (40 s each way), so a large
+                // white area never sits on the same pixels at the same level.
+                val coverBreath = androidx.compose.animation.core.rememberInfiniteTransition(label = "coverBreath").animateFloat(
+                    1f, 0.85f,
+                    androidx.compose.animation.core.infiniteRepeatable(tween(40_000, easing = androidx.compose.animation.core.FastOutSlowInEasing), androidx.compose.animation.core.RepeatMode.Reverse),
+                    label = "coverBreathV",
+                )
                 DriftingCover(Modifier.weight(1f).fillMaxWidth(), speedFactor = speedFactors[manager.driftSpeed], label = speedLabel) { coverSize ->
                     FocusSurface(
                         onClick = { manager.driftSpeed = (manager.driftSpeed + 1) % 3; speedTick++ },
@@ -568,7 +575,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                             cacheKey = "al-cover-${coverId.orEmpty()}",
                             sizePx = 800,
                             fallbackLetter = album,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxSize().graphicsLayer { alpha = coverBreath.value },
                         )
                     }
                 }
@@ -587,6 +594,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                         onSeek = { player.seekTo(it) },
                         onTogglePlay = togglePlay,
                         blockSeek = { wake.block },
+                        lyricStartMs = lyrics?.synced?.firstOrNull()?.timeMs?.takeIf { it >= 15_000L },
                     )
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -751,6 +759,7 @@ private fun ProgressRow(
     onSeek: (Long) -> Unit,
     onTogglePlay: () -> Unit,
     blockSeek: () -> Boolean,
+    lyricStartMs: Long?,
 ) {
     var focused by remember { mutableStateOf(false) }
     var scrub by remember { mutableStateOf<Long?>(null) }
@@ -761,6 +770,10 @@ private fun ProgressRow(
     val pos = scrub ?: position.value
     val frac = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
     val barHeight = if (focused) 8.dp else 4.dp
+    // Thin, non-interactive marker where the synced lyrics begin: fades in, and fades out once playback passes it.
+    val markerAlpha = animateFloatAsState(
+        if (lyricStartMs != null && dur > 0 && pos < lyricStartMs) 1f else 0f, tween(700), label = "lyricMarker",
+    )
 
     Column(
         Modifier
@@ -799,6 +812,11 @@ private fun ProgressRow(
     ) {
         Box(Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.CenterStart) {
             Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))
+            if (lyricStartMs != null && dur > 0) {
+                Box(Modifier.fillMaxWidth((lyricStartMs.toFloat() / dur).coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
+                    Box(Modifier.width(2.dp).height(16.dp).graphicsLayer { alpha = markerAlpha.value }.background(Color(0xFF2A2A2A)))
+                }
+            }
             Box(Modifier.fillMaxWidth(frac).height(barHeight).breathe(OffWhite).background(OffWhite, RoundedCornerShape(4.dp)))
             if (focused) {
                 Box(Modifier.fillMaxWidth(frac), contentAlignment = Alignment.CenterEnd) {
@@ -1018,21 +1036,14 @@ private fun NoLyricsBox(message: String, hidden: Boolean, onToggle: () -> Unit, 
         delay(5_000)
         fade.animateTo(0f, tween(5_000, easing = LinearEasing))
     }
+    // Plain text: deliberately not focusable/selectable (the menu's Hide/Show Lyrics still controls visibility).
     Box(modifier, contentAlignment = Alignment.Center) {
-        FocusSurface(
-            onClick = onToggle,
-            modifier = Modifier.focusRequester(paneFocus).graphicsLayer { alpha = fade.value }.breathe(LyricDim),
-            containerColor = Color.Transparent,
-            focusedContainerColor = if (hidden) Color.Transparent else Color(0xFF1E1E1E),
-            showFocus = !hidden,
-        ) {
-            Text(
-                message,
-                Modifier.padding(horizontal = 28.dp, vertical = 16.dp),
-                fontSize = 20.sp,
-                color = if (hidden) Color.Transparent else LyricDim,
-            )
-        }
+        Text(
+            message,
+            Modifier.graphicsLayer { alpha = fade.value }.breathe(LyricDim).padding(horizontal = 28.dp, vertical = 16.dp),
+            fontSize = 20.sp,
+            color = if (hidden) Color.Transparent else LyricDim,
+        )
     }
 }
 

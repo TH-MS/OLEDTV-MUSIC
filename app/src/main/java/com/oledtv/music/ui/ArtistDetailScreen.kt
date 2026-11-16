@@ -209,7 +209,8 @@ fun AlbumTracklistScreen(
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(album.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(album.artist.orEmpty(), fontSize = 18.sp, color = Color(0xFFBBBBBB), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val shownArtist = ((state as? Load.Ok)?.value?.let { uniformTrackArtist(it, album.artist) }) ?: album.artist.orEmpty()
+                Text(shownArtist, fontSize = 18.sp, color = Color(0xFFBBBBBB), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(album.year?.toString().orEmpty(), fontSize = 16.sp, color = Color(0xFF888888))
             }
         }
@@ -222,6 +223,13 @@ fun AlbumTracklistScreen(
             }
         }
     }
+}
+
+/** The artist shared by every track when it differs from the album artist; otherwise null. */
+fun uniformTrackArtist(songs: List<SongDto>, albumArtist: String?): String? {
+    val first = songs.firstOrNull()?.artist?.takeIf { it.isNotBlank() } ?: return null
+    if (first == albumArtist) return null
+    return if (songs.all { it.artist == first }) first else null
 }
 
 @Composable
@@ -243,8 +251,11 @@ private fun TrackList(
     // Show/hide transition: one 0..1 progress, read only in layout/draw (no recomposition per frame).
     // Always automatic: if even one track's artist differs from the album artist, every track shows its artist
     // (those that match the album artist are shown dimmer, as they are mostly redundant); if all match, nothing extra.
+    // Exception: if the album artist differs but every track has the SAME artist, the header shows that artist
+    // instead and the rows show nothing extra.
     val showArtist = remember(songs, albumArtist) {
-        !albumArtist.isNullOrBlank() && songs.any { !it.artist.isNullOrBlank() && it.artist != albumArtist }
+        uniformTrackArtist(songs, albumArtist) == null &&
+            !albumArtist.isNullOrBlank() && songs.any { !it.artist.isNullOrBlank() && it.artist != albumArtist }
     }
     val p = animateFloatAsState(if (showArtist) 1f else 0f, tween(170, easing = FastOutSlowInEasing), label = "artistP")
 
@@ -315,7 +326,7 @@ private fun TrackList(
                                                 layout(pl.width, h) { pl.placeRelative(0, 0) }
                                             }
                                             .graphicsLayer { alpha = rowP() },
-                                        fontSize = 12.sp, color = if (redundant) Color(0xFF4C4C4C) else Color(0xFF7E7E7E), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        fontSize = 12.sp, color = if (redundant) Color(0xFF353535) else Color(0xFF7E7E7E), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                             }

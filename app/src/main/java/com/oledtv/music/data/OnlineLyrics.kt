@@ -39,7 +39,7 @@ class OnlineLyrics private constructor(context: Context) {
         .build()
 
     private fun key(artist: String, title: String, album: String, durSec: Int): String {
-        val raw = "v2|${artist.trim().lowercase()}|${title.trim().lowercase()}|${album.trim().lowercase()}|$durSec"
+        val raw = "v3|${artist.trim().lowercase()}|${title.trim().lowercase()}|${album.trim().lowercase()}|$durSec"
         return MessageDigest.getInstance("SHA-1").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
@@ -104,6 +104,23 @@ class OnlineLyrics private constructor(context: Context) {
         call(search.toString()).use { r ->
             if (r.isSuccessful) { for (e in JsonParser.parseString(r.body?.string().orEmpty()).asJsonArray) consider(e.asJsonObject) }
             else if (r.code != 404) throw IOException("HTTP ${r.code}")
+        }
+        if (cands.isEmpty() && durSec > 0) {
+            // 3) fuzzy fallback: the library may say "Tom Petty" where LRCLIB says "Tom Petty & The Heartbreakers".
+            //    Title-only search; accept only results whose artist overlaps ours AND whose length matches.
+            fun norm(x: String) = x.lowercase().replace(Regex("[^a-z0-9 ]"), " ").split(' ').filter { it.isNotBlank() && it != "the" && it != "and" }
+            val want = norm(artist).toSet()
+            val clean = title.replace(Regex("\\s*[\\(\\[].*?[\\)\\]]"), "").trim().ifBlank { title }
+            val fuzzy = "https://lrclib.net/api/search".toHttpUrl().newBuilder().addQueryParameter("track_name", clean).build()
+            call(fuzzy.toString()).use { r ->
+                if (r.isSuccessful) {
+                    for (e in JsonParser.parseString(r.body?.string().orEmpty()).asJsonArray) {
+                        val o = e.asJsonObject
+                        val a = o.get("artistName")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+                        if (want.isNotEmpty() && norm(a).toSet().containsAll(want)) consider(o)
+                    }
+                } else if (r.code != 404) throw IOException("HTTP ${r.code}")
+            }
         }
         return (cands.filter { it.english }.minByOrNull { it.diff } ?: cands.minByOrNull { it.diff })?.text
     }
