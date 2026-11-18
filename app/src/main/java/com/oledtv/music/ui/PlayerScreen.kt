@@ -450,8 +450,10 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
 
     // OLED: the cover toggles the rest of the UI off/on. The cover itself always stays (and keeps pixel-shifting).
     var uiVisible by remember { mutableStateOf(true) }
+    // "Hide all": music keeps playing, nothing at all is drawn (cover included) until any button is pressed.
+    var allHidden by remember { mutableStateOf(false) }
     var noLyricsHidden by remember { mutableStateOf(false) }
-    BackHandler(enabled = !uiVisible) { uiVisible = true }
+    BackHandler(enabled = !uiVisible || allHidden) { allHidden = false; uiVisible = true }
 
     // Cover drift speed (click the cover to cycle) + a short label shown above the cover.
     val speedNames = remember { listOf("Fast", "Medium", "Slow") }
@@ -513,6 +515,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
         val isDirection = ev.key == Key.DirectionUp || ev.key == Key.DirectionDown ||
             ev.key == Key.DirectionLeft || ev.key == Key.DirectionRight
         when {
+            allHidden -> { if (ev.type == KeyEventType.KeyDown) { allHidden = false; uiVisible = true }; true }
             !uiVisible && isDirection && ev.type == KeyEventType.KeyDown -> { uiVisible = true; true }
             isSelect && ev.type == KeyEventType.KeyDown -> {
                 if (ev.nativeKeyEvent.repeatCount == 0 && hold.job == null) {
@@ -561,7 +564,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                     androidx.compose.animation.core.infiniteRepeatable(tween(40_000, easing = androidx.compose.animation.core.FastOutSlowInEasing), androidx.compose.animation.core.RepeatMode.Reverse),
                     label = "coverBreathV",
                 )
-                DriftingCover(Modifier.weight(1f).fillMaxWidth(), speedFactor = speedFactors[manager.driftSpeed], label = speedLabel) { coverSize ->
+                DriftingCover(Modifier.weight(1f).fillMaxWidth().graphicsLayer { alpha = if (allHidden) 0f else 1f }, speedFactor = speedFactors[manager.driftSpeed], label = speedLabel) { coverSize ->
                     FocusSurface(
                         onClick = { manager.driftSpeed = (manager.driftSpeed + 1) % 3; speedTick++ },
                         modifier = Modifier.size(coverSize).focusRequester(coverFocus),
@@ -623,6 +626,7 @@ fun PlayerScreen(repo: NavidromeRepository, manager: PlaybackManager) {
                     onRefresh = { if (!refreshing) refreshTick++ },
                     onToggleLyricsHidden = { lyricsHidden = !lyricsHidden },
                     onHideUi = { uiVisible = false },
+                    onHideAll = { uiVisible = false; allHidden = true },
                     lyricFade = lyricFade,
                     modifier = Modifier.weight(0.55f).fillMaxHeight().graphicsLayer { alpha = if (uiVisible) 1f else 0f },
                 )
@@ -814,8 +818,9 @@ private fun ProgressRow(
         Box(Modifier.fillMaxWidth().height(16.dp), contentAlignment = Alignment.CenterStart) {
             Box(Modifier.fillMaxWidth().height(barHeight).background(Color(0xFF2A2A2A), RoundedCornerShape(4.dp)))
             if (lyricStartMs != null && dur > 0) {
+                // Drawn BEHIND the played bar and starting exactly at the point: the bar's rounded tip simply swallows it.
                 Box(Modifier.fillMaxWidth((lyricStartMs.toFloat() / dur).coerceIn(0f, 1f)), contentAlignment = Alignment.CenterEnd) {
-                    Box(Modifier.width(2.dp).height(barHeight).graphicsLayer { alpha = if (lyricStartMs != null && (scrub ?: position.value) >= lyricStartMs) 0f else markerAlpha.value }.breathe(OffWhite).background(OffWhite))
+                    Box(Modifier.offset(x = 2.dp).width(2.dp).height(barHeight).graphicsLayer { alpha = markerAlpha.value }.breathe(OffWhite).background(OffWhite))
                 }
             }
             Box(Modifier.fillMaxWidth(frac).height(barHeight).breathe(OffWhite).background(OffWhite, RoundedCornerShape(4.dp)))
@@ -855,7 +860,7 @@ private fun LyricsPane(
  * The lyrics pane plus its options menu.
  *  - A small "three bars" button sits just OUTSIDE the right edge of the lyrics box, vertically centred. It is an
  *    ordinary focus target: press Right from the lyrics border to highlight it (that alone does nothing).
- *  - SELECT on the bars opens a short list to the left of it (Hide/Show Lyrics, Hide UI).
+ *  - SELECT on the bars opens a short list to the left of it (Hide/Show Lyrics, Refresh lyrics, Hide UI, Hide all).
  *  - LEFT or BACK closes the list and leaves the bars highlighted; LEFT again returns to the lyrics.
  * The bars and the lyric border fade together after 10 s of inactivity (lyricFade).
  */
@@ -865,7 +870,7 @@ private fun LyricsArea(
     onLeaveLeft: () -> Unit,
     noLyricsHidden: Boolean, onToggleNoLyrics: () -> Unit, onSeek: (Long) -> Unit,
     lyricsHidden: Boolean, trackKey: String, refreshing: Boolean, refreshNote: String?, onRefresh: () -> Unit,
-    onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit,
+    onToggleLyricsHidden: () -> Unit, onHideUi: () -> Unit, onHideAll: () -> Unit,
     lyricFade: State<Float>, modifier: Modifier,
 ) {
     val paneFocus = remember { FocusRequester() }
@@ -873,6 +878,7 @@ private fun LyricsArea(
     val first = remember { FocusRequester() }
     val second = remember { FocusRequester() }
     val refreshReq = remember { FocusRequester() }
+    val third = remember { FocusRequester() }
     var menuOpen by remember { mutableStateOf(false) }
     var openedAt by remember { mutableLongStateOf(0L) }
     var current by remember { mutableIntStateOf(0) }
@@ -945,8 +951,8 @@ private fun LyricsArea(
 
             val canRefresh = !lyricsHidden && !refreshing && lyrics != null
             val firstShown = hasLyrics || lyricsHidden
-            fun order() = buildList { if (firstShown) add(1); if (canRefresh) add(2); add(3) }
-            fun reqFor(n: Int) = when (n) { 1 -> first; 2 -> refreshReq; else -> second }
+            fun order() = buildList { if (firstShown) add(1); if (canRefresh) add(2); add(3); add(4) }
+            fun reqFor(n: Int) = when (n) { 1 -> first; 2 -> refreshReq; 3 -> second; else -> third }
             Column(
                 Modifier.align(Alignment.CenterEnd).padding(end = 10.dp)
                     .graphicsLayer { alpha = if (menuOpen) 1f else 0f }
@@ -1002,6 +1008,13 @@ private fun LyricsArea(
                         .onFocusChanged { if (it.isFocused) current = 3 },
                 ) {
                     Text("Hide UI", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
+                }
+                FocusSurface(
+                    onClick = { if (menuOpen && armed()) { closeMenu(); onHideAll() } },
+                    Modifier.width(140.dp).focusProperties { canFocus = menuOpen }.focusRequester(third)
+                        .onFocusChanged { if (it.isFocused) current = 4 },
+                ) {
+                    Text("Hide all", Modifier.padding(horizontal = 14.dp, vertical = 10.dp), fontSize = 18.sp)
                 }
             }
         }
