@@ -76,6 +76,9 @@ import com.oledtv.music.data.AlbumDto
 import com.oledtv.music.data.ArtistDto
 import com.oledtv.music.data.NavidromeRepository
 import com.oledtv.music.data.SongDto
+import com.oledtv.music.data.layoutTracks
+import com.oledtv.music.data.sameArtist
+import com.oledtv.music.data.uniformTrackArtist
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
@@ -225,13 +228,6 @@ fun AlbumTracklistScreen(
     }
 }
 
-/** The artist shared by every track when it differs from the album artist; otherwise null. */
-fun uniformTrackArtist(songs: List<SongDto>, albumArtist: String?): String? {
-    val first = songs.firstOrNull()?.artist?.takeIf { it.isNotBlank() } ?: return null
-    if (first == albumArtist) return null
-    return if (songs.all { it.artist == first }) first else null
-}
-
 @Composable
 private fun TrackList(
     songs: List<SongDto>,
@@ -244,8 +240,8 @@ private fun TrackList(
     if (songs.isEmpty()) { StatusPane("This album has no tracks."); return }
     val startIndex = remember { lastIndex.intValue.coerceIn(0, songs.lastIndex) }
     // Disc labels appear only if the album really has 2+ discs (a lone "Disc 1" is never shown).
-    val multiDisc = remember(songs) { songs.map { it.discNumber ?: 1 }.distinct().size > 1 }
-    val discTotal = remember(songs) { songs.maxOf { it.discNumber ?: 1 } }
+    val rows = remember(songs) { layoutTracks(songs) }
+    val ordered = remember(rows) { rows.map { it.song } }
 
     val startFocus = remember { FocusRequester() }
 
@@ -256,7 +252,7 @@ private fun TrackList(
     // instead and the rows show nothing extra.
     val showArtist = remember(songs, albumArtist) {
         uniformTrackArtist(songs, albumArtist) == null &&
-            !albumArtist.isNullOrBlank() && songs.any { !it.artist.isNullOrBlank() && it.artist != albumArtist }
+            !albumArtist.isNullOrBlank() && songs.any { !it.artist.isNullOrBlank() && !sameArtist(it.artist, albumArtist) }
     }
     val p = animateFloatAsState(if (showArtist) 1f else 0f, tween(170, easing = FastOutSlowInEasing), label = "artistP")
 
@@ -276,21 +272,21 @@ private fun TrackList(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            itemsIndexed(songs, key = { _, s -> s.id }) { i, song ->
-                val disc = song.discNumber ?: 1
-                val firstOfDisc = multiDisc && (i == 0 || disc != (songs[i - 1].discNumber ?: 1))
-                val hasArtist = !song.artist.isNullOrBlank()
+            itemsIndexed(rows, key = { _, r -> r.song.id }) { i, row ->
+                val song = row.song
+                val shownArtist = song.artist?.takeIf { it.isNotBlank() } ?: albumArtist.orEmpty()
+                val hasArtist = shownArtist.isNotBlank()
                 val rowP: () -> Float = { if (hasArtist) p.value else 0f }
                 Column {
-                    if (firstOfDisc) {
+                    if (row.header != null) {
                         Text(
-                            "Disc $disc of $discTotal",
+                            row.header,
                             Modifier.padding(start = 20.dp, top = if (i == 0) 0.dp else 14.dp, bottom = 6.dp),
                             fontSize = 15.sp, fontWeight = FontWeight.Medium, color = Color(0xFF9A9A9A),
                         )
                     }
                     FocusSurface(
-                        onClick = { onPlay(songs, i) },
+                        onClick = { onPlay(ordered, i) },
                         playing = song.id == playingSongId,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -298,7 +294,7 @@ private fun TrackList(
                             .onFocusChanged { if (it.hasFocus) lastIndex.intValue = i },
                     ) {
                         Row(Modifier.fillMaxWidth().height(rowH).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text((song.track ?: (i + 1)).toString().padStart(2, '0'), Modifier.width(44.dp), fontSize = 18.sp, color = Color(0xFF8A8A8A))
+                            Text(row.num, Modifier.width(44.dp), fontSize = 18.sp, color = Color(0xFF8A8A8A), maxLines = 1, softWrap = false)
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
                                 // Title: 20 sp -> 18 sp (scaled in the draw phase, layout height follows) ...
                                 Text(
@@ -317,9 +313,9 @@ private fun TrackList(
                                 )
                                 // ... artist: small and dim, sliding/fading in underneath.
                                 if (hasArtist) {
-                                    val redundant = song.artist == albumArtist
+                                    val redundant = sameArtist(shownArtist, albumArtist)
                                     Text(
-                                        song.artist.orEmpty(),
+                                        shownArtist,
                                         Modifier
                                             .layout { m, c ->
                                                 val pl = m.measure(c)

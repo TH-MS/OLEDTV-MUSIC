@@ -59,7 +59,8 @@ data class ScanBody(override val status: String?, override val error: SubsonicEr
 data class ScanDto(val scanning: Boolean?, val count: Long?)
 data class ArtistsDto(val index: List<IndexDto>?)
 data class IndexDto(val name: String?, val artist: List<ArtistDto>?)
-data class ArtistDto(val id: String, val name: String, val albumCount: Int?, val coverArt: String?)
+// Every parameter has a default so a field missing from the server response can never leave a null in a non-null property.
+data class ArtistDto(val id: String = "", val name: String = "", val albumCount: Int? = null, val coverArt: String? = null)
 
 data class ArtistBody(override val status: String?, override val error: SubsonicError?, val artist: ArtistWithAlbums?) : SubsonicBody
 data class ArtistWithAlbums(val id: String?, val name: String?, val album: List<AlbumDto>?)
@@ -68,15 +69,16 @@ data class AlbumList2Body(override val status: String?, override val error: Subs
 data class AlbumList2Dto(val album: List<AlbumDto>?)
 
 data class AlbumDto(
-    val id: String, val name: String, val artist: String?, val artistId: String?,
-    val year: Int?, val coverArt: String?, val songCount: Int?, val duration: Int?,
+    val id: String = "", val name: String = "", val artist: String? = null, val artistId: String? = null,
+    val year: Int? = null, val coverArt: String? = null, val songCount: Int? = null, val duration: Int? = null,
 )
 
 data class AlbumBody(override val status: String?, override val error: SubsonicError?, val album: AlbumWithSongs?) : SubsonicBody
 data class AlbumWithSongs(val id: String?, val name: String?, val artist: String?, val year: Int?, val coverArt: String?, val song: List<SongDto>?)
 data class SongDto(
-    val id: String, val title: String, val album: String?, val artist: String?, val albumId: String?,
-    val track: Int?, val discNumber: Int?, val duration: Int?, val coverArt: String?,
+    val id: String = "", val title: String = "", val album: String? = null, val artist: String? = null, val albumId: String? = null,
+    val track: Int? = null, val discNumber: Int? = null, val duration: Int? = null, val coverArt: String? = null,
+    val path: String? = null,
 )
 
 data class LyricsBody(override val status: String?, override val error: SubsonicError?, val lyrics: LegacyLyrics?) : SubsonicBody
@@ -149,12 +151,6 @@ object LrcParser {
 }
 
 // ───────────────────────── Repository ─────────────────────────
-
-/** Sort key that ignores a leading "The " (The Police sits under P, The Beautiful South under B). */
-fun artistSortKey(name: String): String {
-    val n = name.trim().lowercase()
-    return if (n.startsWith("the ") && n.length > 4) n.removePrefix("the ").trim() else n
-}
 
 class NavidromeRepository(val config: ServerConfig) {
 
@@ -262,15 +258,14 @@ class NavidromeRepository(val config: ServerConfig) {
     suspend fun albumsOf(artistId: String): List<AlbumDto> {
         albumsCache[artistId]?.let { return it }
         val list = api.getArtist(artistId).unwrap().artist?.album.orEmpty()
-            .sortedWith(compareBy<AlbumDto> { it.year ?: Int.MAX_VALUE }.thenBy { it.name.lowercase() })
+            .sortedWith(compareBy<AlbumDto> { it.year ?: Int.MAX_VALUE }.thenBy { albumSortKey(it.name) })
         albumsCache[artistId] = list
         return list
     }
 
     suspend fun songsOf(albumId: String): List<SongDto> {
         songsCache[albumId]?.let { return it }
-        val list = api.getAlbum(albumId).unwrap().album?.song.orEmpty()
-            .sortedWith(compareBy<SongDto> { it.discNumber ?: 1 }.thenBy { it.track ?: 0 })
+        val list = layoutTracks(api.getAlbum(albumId).unwrap().album?.song.orEmpty()).map { it.song }
         songsCache[albumId] = list
         return list
     }

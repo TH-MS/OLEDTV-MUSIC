@@ -266,7 +266,7 @@ class PlaybackManager private constructor(context: Context) {
                 .setMediaMetadata(
                     MediaMetadata.Builder()
                         .setTitle(s.title)
-                        .setArtist(s.artist ?: album.artist)
+                        .setArtist(s.artist?.takeIf { it.isNotBlank() } ?: album.artist)
                         .setAlbumTitle(album.name)
                         .setExtras(Bundle().apply {
                             putString(KEY_COVER, s.coverArt ?: album.coverArt)
