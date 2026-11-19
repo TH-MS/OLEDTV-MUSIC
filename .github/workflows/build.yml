@@ -58,12 +58,15 @@ jobs:
       - name: Name the APK
         run: |
           cp app/build/outputs/apk/release/app-release.apk "OLEDTV-Music-build${{ github.run_number }}.apk"
+          cp phone/build/outputs/apk/release/phone-release.apk "OLEDTV-Music-Phone-build${{ github.run_number }}.apk"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: OLEDTV-Music-build${{ github.run_number }}
-          path: OLEDTV-Music-build${{ github.run_number }}.apk
+          path: |
+            OLEDTV-Music-build${{ github.run_number }}.apk
+            OLEDTV-Music-Phone-build${{ github.run_number }}.apk
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -72,6 +75,8 @@ jobs:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
           name: ${{ github.ref_type == 'tag' && github.ref_name || format('Build {0}', github.run_number) }}
           target_commitish: ${{ github.sha }}
-          files: OLEDTV-Music-build${{ github.run_number }}.apk
+          files: |
+            OLEDTV-Music-build${{ github.run_number }}.apk
+            OLEDTV-Music-Phone-build${{ github.run_number }}.apk
           make_latest: true
           generate_release_notes: true
