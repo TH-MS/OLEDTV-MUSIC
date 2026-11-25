@@ -14,4 +14,3 @@ dependencyResolutionManagement {
 }
 rootProject.name = "OLEDTV-MUSIC"
 include(":app")
-include(":phone")
