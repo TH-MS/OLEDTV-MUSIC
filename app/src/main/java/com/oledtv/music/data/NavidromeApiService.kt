@@ -199,33 +199,46 @@ class NavidromeRepository(val config: ServerConfig) {
      * already has), waits for the scan to finish, then drops every cache. Returns a short status message.
      */
     suspend fun refreshLibrary(): String {
-        val before = artistsCache?.size ?: api.getArtists().unwrap().artists?.index.orEmpty().sumOf { it.artist.orEmpty().size }
+        val before = snapshot()
         var scanned = false
-        var beforeCount: Long? = null
-        var afterCount: Long? = null
         try {
-            beforeCount = api.getScanStatus().unwrap().scanStatus?.count
             api.startScan().unwrap()
             scanned = true
             for (i in 0 until 120) {
                 kotlinx.coroutines.delay(1_000)
-                val st = api.getScanStatus().unwrap().scanStatus
-                afterCount = st?.count
-                if (st?.scanning != true) break
+                if (api.getScanStatus().unwrap().scanStatus?.scanning != true) break
             }
         } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: IOException) { if (!scanned && isUnreachable(e)) throw e }
         artistsCache = null; albumsCache.clear(); songsCache.clear()
-        val now = artists().size
-        val bc = beforeCount
-        val ac = afterCount
-        val added = if (bc != null && ac != null) ac - bc else 0L
+        val after = snapshot()
+        val parts = ArrayList<String>()
+        (after.artists - before.artists).takeIf { it > 0 }?.let { parts += if (it == 1) "1 new artist" else "$it new artists" }
+        (after.albums - before.albums).takeIf { it > 0 }?.let { parts += if (it == 1) "1 new album" else "$it new albums" }
+        (after.tracks - before.tracks).takeIf { it > 0 }?.let { parts += if (it == 1) "1 new track" else "$it new tracks" }
         return when {
-            added > 0 -> "Found $added new file(s) - library updated"
-            now != before -> "Library updated (${now - before} new artist(s))"
+            parts.isNotEmpty() -> "Library updated: " + parts.joinToString(", ")
             scanned -> "No new music found"
-            else -> "Library reloaded (server did not allow a scan)"
+            else -> "Library reloaded (server did not allow a scan) - no new music found"
         }
+    }
+
+    private class Snapshot(val artists: Int, val albums: Int, val tracks: Int)
+
+    /** Counts of artists, albums and tracks as the server reports them (new tracks in an existing album change the track count). */
+    private suspend fun snapshot(): Snapshot {
+        val artistCount = api.getArtists().unwrap().artists?.index.orEmpty().sumOf { it.artist.orEmpty().size }
+        var albums = 0
+        var tracks = 0
+        var offset = 0
+        while (true) {
+            val page = api.getAlbumList2("alphabeticalByName", 500, offset).unwrap().albumList2?.album.orEmpty()
+            albums += page.size
+            tracks += page.sumOf { it.songCount ?: 0 }
+            if (page.size < 500) break
+            offset += 500
+        }
+        return Snapshot(artistCount, albums, tracks)
     }
 
     /** Album Artists only, alphabetical. */

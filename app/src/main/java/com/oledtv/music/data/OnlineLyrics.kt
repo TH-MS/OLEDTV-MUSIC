@@ -39,7 +39,7 @@ class OnlineLyrics private constructor(context: Context) {
         .build()
 
     private fun key(artist: String, title: String, album: String, durSec: Int): String {
-        val raw = "v3|${artist.trim().lowercase()}|${title.trim().lowercase()}|${album.trim().lowercase()}|$durSec"
+        val raw = "v4|${artist.trim().lowercase()}|${title.trim().lowercase()}|${album.trim().lowercase()}|$durSec"
         return MessageDigest.getInstance("SHA-1").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
@@ -59,10 +59,17 @@ class OnlineLyrics private constructor(context: Context) {
         if (cached != null) return cached
 
         return try {
-            val text = fetch(artist, title, album, durSec)
+            var text = fetch(artist, title, album, durSec)
+            var secondFailed = false
+            // Provider 2: nothing on LRCLIB -> automatically try NetEase before giving up.
+            if (text == null) {
+                try { text = fetchNetEase(artist, title, durSec) }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { secondFailed = true }
+            }
             withContext(Dispatchers.IO) {
                 if (text != null) { lrc.writeText(text); none.delete() }
-                else if (durSec > 0) { none.writeText("0") }
+                else if (durSec > 0 && !secondFailed) { none.writeText("0") } // only remember "not found" if every provider answered
                 Unit
             }
             val lines = text?.let { LrcParser.parse(it) }.orEmpty()
@@ -123,6 +130,39 @@ class OnlineLyrics private constructor(context: Context) {
             }
         }
         return (cands.filter { it.english }.minByOrNull { it.diff } ?: cands.minByOrNull { it.diff })?.text
+    }
+
+    /** NetEase Cloud Music (unofficial, best effort): best length-matched synced lyrics, English preferred; null if none. Throws on network errors. */
+    private suspend fun fetchNetEase(artist: String, title: String, durSec: Int): String? {
+        val q = "https://music.163.com/api/search/get".toHttpUrl().newBuilder()
+            .addQueryParameter("s", "$artist $title").addQueryParameter("type", "1").addQueryParameter("limit", "6").build()
+        val ids = ArrayList<Long>()
+        call(q.toString(), referer = "https://music.163.com/").use { r ->
+            if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
+            val songs = JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject.getAsJsonObject("result")?.getAsJsonArray("songs")
+            if (songs != null) for (e in songs) {
+                val o = e.asJsonObject
+                val d = (o.get("duration")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0) / 1000.0
+                if (durSec > 0 && d > 0 && kotlin.math.abs(d - durSec) > DUR_TOLERANCE) continue
+                ids += o.get("id").asLong
+            }
+        }
+        var bestAny: String? = null
+        for (id in ids.take(3)) {
+            call("https://music.163.com/api/song/lyric?id=$id&lv=1", referer = "https://music.163.com/").use { r ->
+                if (r.isSuccessful) {
+                    val raw = JsonParser.parseString(r.body?.string().orEmpty()).asJsonObject.getAsJsonObject("lrc")?.get("lyric")?.takeIf { !it.isJsonNull }?.asString
+                    if (!raw.isNullOrBlank()) {
+                        val lines = LrcParser.parse(raw)
+                        if (lines.size >= 4) {
+                            if (LyricsLang.looksEnglish(lines.joinToString("\n") { it.text })) return raw
+                            if (bestAny == null) bestAny = raw
+                        }
+                    }
+                }
+            }
+        }
+        return bestAny
     }
 
     /** Stable fingerprint of a lyric set (used to avoid offering the same version twice). */
